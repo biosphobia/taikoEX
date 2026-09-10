@@ -10,6 +10,7 @@ data/
   songs/<name>/         one folder per song: chart.tja + audio (ogg / mp3 / wav)
   skins/<name>/         skin.json + optional PNG files
   sounds/               don.wav, ka.wav, balloon_pop.wav
+  models/               drum.glb and controller.glb for the 3D view (optional)
 tracker/
   tracker_config.json   camera, colours, calibration, pads, osu keys
 ```
