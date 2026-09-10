@@ -12,8 +12,12 @@ See docs/PROTOCOL.md for the message formats.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import socket
 import struct
+import subprocess
+import sys
 import time
 
 import cv2
@@ -39,6 +43,63 @@ class StateSender:
         self.sock.close()
 
 
+TRACKER_PROCESS_MARKERS = ("taiko_tracker", "run_tracker")
+
+
+def port_holder(port: int) -> tuple[int, str]:
+    """(pid, description) of the process bound to UDP ``port``, or (0, "")."""
+    port = int(port)
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(["netstat", "-ano", "-p", "udp"], capture_output=True, text=True, timeout=10).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 4 and parts[0].upper() == "UDP" and parts[1].endswith(f":{port}"):
+                    pid = int(parts[-1])
+                    listing = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                                             capture_output=True, text=True, timeout=10).stdout
+                    name = listing.split(",")[0].strip('" \r\n') if listing.strip() else ""
+                    return pid, name
+        else:
+            out = subprocess.run(["lsof", "-t", "-i", f"udp:{port}"], capture_output=True, text=True, timeout=10).stdout
+            for token in out.split():
+                pid = int(token)
+                return pid, process_description(pid)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return 0, ""
+
+
+def process_description(pid: int) -> str:
+    """The command line of a process (POSIX), read from /proc where there is one."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            return fh.read().replace(b"\0", b" ").decode(errors="replace").strip()
+    except OSError:
+        pass
+    try:
+        return subprocess.run(["ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def kill_port_holder(port: int) -> str:
+    """Kill the process on UDP ``port`` if it is a tracker; returns what was killed, or ""."""
+    pid, description = port_holder(port)
+    if not pid or pid == os.getpid():
+        return ""
+    if not any(marker in description.lower() for marker in TRACKER_PROCESS_MARKERS):
+        return ""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return f"pid {pid}: {description}"
+
+
 class CommandReceiver:
     """The tracker's command port.
 
@@ -53,13 +114,14 @@ class CommandReceiver:
     def __init__(self, port: int, host: str = "0.0.0.0", takeover_s: float = 4.0):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         deadline = time.time() + takeover_s
-        asked = False
+        asked = killed = False
         while True:
             try:
                 self.sock.bind((host, int(port)))
                 break
             except OSError as exc:
-                if time.time() >= deadline:
+                now = time.time()
+                if now >= deadline:
                     raise RuntimeError(
                         f"Port {port} is already in use and its owner did not quit - another tracker "
                         f"(or another program) is holding it. Stop it, or set network.command_port "
@@ -68,6 +130,14 @@ class CommandReceiver:
                     print(f"[network] port {port} is busy - asking the tracker holding it to quit")
                     self.ask_to_quit(port)
                     asked = True
+                elif not killed and now >= deadline - takeover_s / 2:
+                    # Half the time is up and it has not let go: a tracker
+                    # stuck in a camera read never will.  Only a process that
+                    # is recognisably a tracker is killed.
+                    killed = True
+                    victim = kill_port_holder(port)
+                    if victim:
+                        print(f"[network] killed the tracker holding port {port} ({victim})")
                 time.sleep(0.25)
         self.sock.setblocking(False)
 

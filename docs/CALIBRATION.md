@@ -227,9 +227,13 @@ The line under the camera view always says why.  The usual cases:
   that one, so this only shows if the driver exposes something unusual.
 
 A tracker left over from an earlier run (the game closed before it did) used
-to block the next start with "port in use".  The new tracker now asks the old
-one to quit and takes the port over, and the game stops the tracker it
-started when its window closes.
+to block the next start with "port in use".  The game now stops any
+`taiko_tracker.exe` still running before it starts one, the new tracker asks
+whatever holds the port to quit and, if that is a tracker that no longer
+answers, ends it and takes the port, and the game stops the tracker it
+started when its window closes.  "Port 47821 is already in use" can now only
+mean a program that is not a tracker is sitting on that port; change
+`network.command_port` (and the matching port in the game's Settings).
 
 ## Accuracy notes
 
