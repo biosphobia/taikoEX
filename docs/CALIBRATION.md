@@ -139,9 +139,39 @@ Pads flash when hit.
 * **Radius** - size of each disc or ring.  Make the face bigger if kas are
   landing as dons.
 
-The **3D view** on the main menu does the same job with the drum drawn in front
-of you: nudge it around with the keyboard, watch your controllers move in real
-time, and see where the camera is sitting relative to you.
+## The 3D view
+
+**3D view** on the main menu draws everything from where you stand: the drum,
+your two controllers with their real tilt, and the PS3 Eye wherever it actually
+sits with a cone showing what it can see.  The camera's own picture is in the
+corner, so you never have to guess whether a hand has drifted out of frame.
+
+It is the easiest way to place the drum, because you can see what you are doing.
+
+| key | what it does |
+| --- | --- |
+| `W` `S` | push the drum away from you / pull it closer |
+| `A` `D` | move it left / right |
+| `Q` `E` | lower it / raise it |
+| `[` `]` | make it smaller / bigger |
+| `1` `2` | put it where your left / right controller is |
+| arrows | look around |
+| `,` `.` | step your viewpoint back / forward |
+| `Tab` | your view, a side view, or the camera's own view |
+| `G` | the lines from the lens to each sphere |
+| `P` | the camera picture in the corner |
+| `Space` | re-point both controllers' heading at the camera |
+| `Enter` | save the layout |
+| `Esc` | back to the menu |
+
+Everything moves in *your* space - "left" is your left, whatever angle the camera
+is at - because the world calibration has already turned the camera's
+measurements into your axes.
+
+Turn the rays on with `G` and watch them while you move: sideways the reading
+sits exactly on the sphere, and along the line of sight it slides back and
+forth.  That is the picture of what the tracker is fighting, and why the drum is
+one big target rather than four small ones.
 
 Pads are flat discs with a normal vector.  The default normal `(0, 1, 0)` means you hit
 downwards.  Edit `normal` in `tracker_config.json` if you want angled pads (for example
