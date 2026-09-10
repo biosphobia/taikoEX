@@ -137,12 +137,15 @@ def keep_drumming(tracker: Tracker, until: float, interval: float = 0.42) -> Non
         time.sleep(interval * 4)
 
 
-def record(godot: Path, out: Path, scene: str, seconds: float, workdir: Path) -> Path:
+def record(godot: Path, out: Path, scene: str, seconds: float, workdir: Path, fast: bool = False) -> Path:
     """Run the 3D view under the movie recorder while the hands play."""
     settings = ROOT / "game" / "data" / "settings.json"
     settings.write_text(json.dumps({"tracker": {"auto_launch": False}}, indent=2))
-    raw = workdir / f"pov_{scene}.avi"
-    title = f"{scene.replace('_', ' ')}: {SCENES[scene]['description']}".replace(" ", "~")
+    raw = workdir / f"pov_{scene}{'_fast' if fast else ''}.avi"
+    title = f"{scene.replace('_', ' ')}: {SCENES[scene]['description']}"
+    if fast:
+        title += " - fastest camera mode, 320x240 at 187 fps"
+    title = title.replace(" ", "~")
     command = [str(godot), "--path", str(ROOT / "game"), "--rendering-driver", "opengl3",
                "--write-movie", str(raw), "--fixed-fps", "30",
                "--log-file", str(workdir / f"godot_{scene}.log"),
@@ -168,6 +171,8 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=ROOT / "footage")
     parser.add_argument("--scene", action="append")
     parser.add_argument("--seconds", type=float, default=34.0)
+    parser.add_argument("--fast", action="store_true",
+                        help="switch each tracker to its fastest camera mode (320x240 at 187 fps) first")
     parser.add_argument("--workdir", type=Path, default=Path("/tmp/taikoex_setups"))
     args = parser.parse_args()
 
@@ -183,6 +188,10 @@ def main() -> int:
             print("  tracker did not start")
             tracker.close()
             continue
+        if args.fast:
+            chosen = tracker.command(cmd="camera_fastest").get("chosen", {})
+            print(f"  fastest mode: {chosen.get('width')}x{chosen.get('height')} at {chosen.get('fps_requested')} fps "
+                  f"(measured {chosen.get('fps_measured')})")
         info = calibrate(tracker)
         print(f"  focal {info['focal_px']} px, glow {info['radius_offset_px']} px, "
               f"background masked {info['background'].get('covered_percent')}%")
@@ -192,14 +201,14 @@ def main() -> int:
         stop_at = time.time() + args.seconds + 25
         drummer = threading.Thread(target=keep_drumming, args=(tracker, stop_at), daemon=True)
         drummer.start()
-        raw = record(args.godot, args.out, scene, args.seconds, args.workdir)
+        raw = record(args.godot, args.out, scene, args.seconds, args.workdir, args.fast)
         stop_drumming.set()
         drummer.join(timeout=5)
         tracker.close()
         if not raw.exists():
             print("  no video produced")
             continue
-        clip = args.out / f"setup-{scene.replace('_', '-')}.mp4"
+        clip = args.out / f"setup-{scene.replace('_', '-')}{'-fast' if args.fast else ''}.mp4"
         subprocess.run([ffmpeg_path(), "-y", "-loglevel", "error", "-i", str(raw),
                         "-c:v", "libx264", "-crf", "23", "-preset", "medium",
                         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(clip)], check=True)
@@ -211,11 +220,11 @@ def main() -> int:
     if len(clips) > 1:
         listing = args.workdir / "clips.txt"
         listing.write_text("".join(f"file '{clip}'\n" for clip in clips))
-        combined = args.out / "taikoex-setups.mp4"
+        combined = args.out / ("taikoex-setups-fast.mp4" if args.fast else "taikoex-setups.mp4")
         subprocess.run([ffmpeg_path(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
                         "-i", str(listing), "-c", "copy", str(combined)], check=True)
         print("combined ->", combined)
-    (args.out / "setups.json").write_text(json.dumps(summary, indent=2))
+    (args.out / ("setups-fast.json" if args.fast else "setups.json")).write_text(json.dumps(summary, indent=2))
     return 0
 
 

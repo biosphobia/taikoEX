@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from .camera import BaseCamera
 from .imu import quat_between, quat_conjugate, quat_multiply, quat_rotate
 from .pads import Pad
 from .tja import parse_tja_notes
@@ -336,7 +337,7 @@ class VirtualController:
         return [float(v) for v in accel], [float(v) for v in gyro]
 
 
-class SimulatedCamera:
+class SimulatedCamera(BaseCamera):
     """Camera backend that renders the virtual scene."""
 
     name = "simulated"
@@ -347,6 +348,7 @@ class SimulatedCamera:
         sim_cfg = config.get("simulation", {}) if isinstance(config, dict) else config["simulation"]
         self.width, self.height = int(cam_cfg["width"]), int(cam_cfg["height"])
         self.fps = int(cam_cfg["fps"])
+        super().__init__(self.width, self.height, self.fps)
         scene_name = str(sim_cfg.get("scene", "clean"))
         self.scene = dict(SCENES.get(scene_name, SCENES["clean"]))
         # Explicit camera pose in the config overrides the scene's.
@@ -357,7 +359,7 @@ class SimulatedCamera:
         self.virtual = VirtualCamera(
             position=np.array(self.scene["camera_position"], dtype=float),
             target=np.array(self.scene["camera_target"], dtype=float),
-            focal_px=float(config["optics"]["focal_px"]),
+            focal_px=float(sim_cfg.get("focal_px", 545.0)) * self.width / 640.0,
             width=self.width, height=self.height,
             sphere_radius_m=float(config["optics"]["sphere_radius_m"]),
         )
@@ -491,8 +493,9 @@ class SimulatedCamera:
                 cv2.rectangle(frame, (int(x * w), int(y * h)), (int((x + rw) * w), int((y + rh) * h)),
                               tuple(int(c) for c in colour), -1)
                 if int(t * 2) % 7 == 0:      # a bright frame now and then, like a real film
-                    cv2.rectangle(frame, (int(x * w) + 10, int(y * h) + 10),
-                                  (int((x + rw) * w) - 10, int((y + rh) * h) - 10), (240, 250, 255), -1)
+                    inset = int(10 * w / 640)
+                    cv2.rectangle(frame, (int(x * w) + inset, int(y * h) + inset),
+                                  (int((x + rw) * w) - inset, int((y + rh) * h) - inset), (240, 250, 255), -1)
             elif item["kind"] == "skin":
                 cx = int((item["center"][0] + 0.03 * math.sin(t * 0.7 + self._skin_phase)) * w)
                 cy = int((item["center"][1] + 0.02 * math.sin(t * 0.5)) * h)
@@ -507,8 +510,11 @@ class SimulatedCamera:
         if cycle > 1.2:
             return
         u, v = sphere_px[int(t // 6) % len(sphere_px)]
-        offset = (cycle / 1.2 - 0.5) * 120
-        cv2.ellipse(frame, (int(u + offset), int(v + 10)), (28, 10), 20, 0, 360, (35, 30, 30), -1, cv2.LINE_AA)
+        # Sized as a share of the frame, so the arm is the same arm at 320x240.
+        px = self.width / 640.0
+        offset = (cycle / 1.2 - 0.5) * 120 * px
+        cv2.ellipse(frame, (int(u + offset), int(v + 10 * px)), (int(28 * px), int(10 * px)), 20, 0, 360,
+                    (35, 30, 30), -1, cv2.LINE_AA)
 
     def advance(self, now: float) -> None:
         """Move the controllers to where they should be at ``now``.

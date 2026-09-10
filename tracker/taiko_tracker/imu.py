@@ -26,6 +26,18 @@ WORLD_UP = np.array([0.0, 1.0, 0.0])
 WORLD_FORWARD = np.array([0.0, 0.0, -1.0])   # towards the camera
 
 
+def cross3(a, b) -> np.ndarray:
+    """Cross product of two 3-vectors.
+
+    ``np.cross`` is written for whole arrays of vectors and spends most of its
+    time on bookkeeping when given a single one; at 187 frames a second, with
+    several cross products per controller per frame, that is worth avoiding.
+    """
+    return np.array([a[1] * b[2] - a[2] * b[1],
+                     a[2] * b[0] - a[0] * b[2],
+                     a[0] * b[1] - a[1] * b[0]])
+
+
 def quat_multiply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     w1, x1, y1, z1 = a
     w2, x2, y2, z2 = b
@@ -65,7 +77,7 @@ def quat_between(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         if np.linalg.norm(axis) < 1e-6:
             axis = np.cross(a, [0.0, 0.0, 1.0])
         return quat_from_axis_angle(axis, math.pi)
-    axis = np.cross(a, b)
+    axis = cross3(a, b)
     return quat_from_axis_angle(axis, math.acos(dot))
 
 
@@ -118,7 +130,7 @@ class OrientationFilter:
         if 0.75 < norm < 1.25 and kp > 0:
             measured_down = -accel / norm
             predicted_down = quat_rotate(quat_conjugate(self.q), -WORLD_UP)
-            correction = np.cross(measured_down, predicted_down) * kp
+            correction = cross3(measured_down, predicted_down) * kp
         omega = gyro + correction
         dq = quat_from_axis_angle(omega, float(np.linalg.norm(omega)) * dt)
         self.q = quat_multiply(self.q, dq)
@@ -137,7 +149,7 @@ class OrientationFilter:
             if np.linalg.norm(flat) < 0.05:
                 return
         flat /= np.linalg.norm(flat)
-        angle = math.atan2(np.cross(flat, WORLD_FORWARD)[1], np.dot(flat, WORLD_FORWARD))
+        angle = math.atan2(cross3(flat, WORLD_FORWARD)[1], np.dot(flat, WORLD_FORWARD))
         self.q = quat_multiply(quat_from_axis_angle(WORLD_UP, angle), self.q)
         self.q /= np.linalg.norm(self.q)
 

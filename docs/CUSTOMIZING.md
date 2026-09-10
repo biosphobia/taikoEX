@@ -82,6 +82,12 @@ your own models instead if you drop them in:
 Model the controller with its handle along +Y and the sphere at the top, which
 is how the tracker describes it, and it will tip and roll with the real one.
 
+The built-in controller is painted in its LED colour - the sphere glows with
+it, a band under the sphere carries it, and the handle is tinted with it
+(`HANDLE_TINT` in `game/scripts/pov/controller_model.gd` sets how strongly).
+Change the colour in the calibration screen's Colours tab and the model
+follows.  A custom `controller.glb` keeps its own materials.
+
 ## Code
 
 * Game screens build their UI in code with the helpers in `game/scripts/ui/ui_kit.gd`;

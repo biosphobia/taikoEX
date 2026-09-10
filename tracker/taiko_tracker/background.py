@@ -61,9 +61,13 @@ class BackgroundLearner:
         self.accumulated: np.ndarray | None = None
         self.on_finished = None      # callable(dict) - set by the tracker
 
-    def start(self, frames: int | None = None) -> int:
+    def start(self, frames: int | None = None, fps: float = 60.0) -> int:
+        """Begin learning.  Watches for ``background.learn_seconds`` of camera
+        time (or an explicit number of ``frames``) so that a faster camera
+        does not simply finish sooner and miss the slow flicker of a screen."""
         cfg = self.config["background"]
-        self.frames_left = int(frames or cfg.get("learn_frames", 30))
+        seconds = float(cfg.get("learn_seconds", 0.5))
+        self.frames_left = int(frames or max(5, round(seconds * max(1.0, fps))))
         self.accumulated = None
         self.active = True
         return self.frames_left
@@ -72,7 +76,11 @@ class BackgroundLearner:
         """Add one LED-off frame.  Returns True once the mask is finished."""
         if not self.active:
             return False
-        processing = self.config["processing"]
+        from .geometry import pixel_scale
+        from .vision import scale_processing
+
+        scale = pixel_scale(self.config["optics"], frame_bgr.shape[1])
+        processing = scale_processing(self.config["processing"], scale)
         blur = int(processing.get("blur", 0))
         if blur > 0:
             k = blur if blur % 2 == 1 else blur + 1
@@ -92,17 +100,19 @@ class BackgroundLearner:
         if self.frames_left > 0:
             return False
         self.active = False
-        self._finish()
+        self._finish(scale)
         return True
 
-    def _finish(self) -> None:
+    def _finish(self, scale: float = 1.0) -> None:
+        """Build the mask.  ``scale`` converts the reference-width sizes in the
+        config to this frame's pixels."""
         cfg = self.config["background"]
         mask = self.accumulated if self.accumulated is not None else None
         if mask is None:
             return
         mask = clean_mask(mask, {"open_iterations": 1, "close_iterations": 1, "fill_holes": True})
         # Drop specks; they are sensor noise, not a lamp.
-        min_area = float(cfg.get("min_area_px", 12))
+        min_area = float(cfg.get("min_area_px", 12)) * scale * scale
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cleaned = np.zeros_like(mask)
         regions = 0
@@ -110,7 +120,7 @@ class BackgroundLearner:
             if cv2.contourArea(contour) >= min_area:
                 cv2.drawContours(cleaned, [contour], -1, 255, cv2.FILLED)
                 regions += 1
-        grow = int(cfg.get("dilate_px", 6))
+        grow = int(round(float(cfg.get("dilate_px", 6)) * scale))
         if grow > 0:
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1))
             cleaned = cv2.dilate(cleaned, kernel)

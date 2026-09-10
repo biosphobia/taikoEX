@@ -15,6 +15,7 @@ var controller_id := 0
 var _built := false
 var _pads_box: VBoxContainer
 var _retry_timer := 0.0
+var _led_presets: Dictionary = {}     # name -> {led, hsv_min, hsv_max}, from the tracker
 
 
 func _ready() -> void:
@@ -57,6 +58,10 @@ func _ready() -> void:
 	root.add_child(tabs)
 
 	TrackerClient.state_updated.connect(_on_state)
+	TrackerClient.send_command({"cmd": "led_presets"}, func(reply):
+		_led_presets = reply.get("presets", {})
+		if _built:
+			_rebuild_colour_tab())
 	TrackerClient.send_command({"cmd": "get_config"}, _on_config)
 	TrackerClient.send_command({"cmd": "set_preview", "preview_enabled": true, "mode": "camera"})
 
@@ -87,7 +92,9 @@ func _on_config(reply: Dictionary) -> void:
 
 func _on_state(state: Dictionary) -> void:
 	preview.frame_size = Vector2(float(state.get("frame", [640, 480])[0]), float(state.get("frame", [640, 480])[1]))
-	var parts := ["%d fps" % int(state.get("fps", 0))]
+	var frame: Array = state.get("frame", [640, 480])
+	var parts := ["%d fps measured   camera %dx%d says %d fps   asked for %d" % [int(state.get("fps", 0)),
+			int(frame[0]), int(frame[1]), int(state.get("fps_camera", 0)), int(state.get("fps_requested", 0))]]
 	for controller in state.get("controllers", []):
 		var w: Array = controller.get("world", [0, 0, 0])
 		var px: Array = controller.get("px", [0, 0, 0])
@@ -208,7 +215,11 @@ func _build_camera_tab() -> void:
 	UiKit.check(box, "Flip vertical", _value("camera.flip_vertical", false), func(v): pending["flip_vertical"] = v)
 	UiKit.option(box, "Rotate", [0, 90, 180, 270], int(_value("camera.rotate_degrees", 0)), func(v): pending["rotate_degrees"] = v)
 	UiKit.text_field(box, "Video file (video backend)", str(_value("camera.video_path", "")), func(v): pending["video_path"] = v)
-	box.add_child(UiKit.button("Apply camera", func(): _patch({"camera": pending.duplicate()}); pending.clear(), 200))
+	UiKit.text_field(box, "Pixel format (opencv, e.g. MJPG; empty for the PS3 Eye)", str(_value("camera.fourcc", "")), func(v): pending["fourcc"] = v)
+	var apply_row := UiKit.row(box)
+	apply_row.add_child(UiKit.button("Apply camera", func(): _patch({"camera": pending.duplicate()}); pending.clear(), 200))
+	apply_row.add_child(UiKit.button("Fastest mode", _find_fastest_mode, 200))
+	box.add_child(UiKit.label("Fastest mode tries the modes listed under camera.fast_modes, quickest first, measures what the driver really delivers and keeps the first one that does. A PS3 Eye reaches 187 fps at 320x240; the calibration carries over, because every pixel setting is scaled with the resolution.", true))
 	box.add_child(UiKit.heading("Live camera controls"))
 	box.add_child(UiKit.label("Lower exposure and gain until the room goes dark and only the spheres stay bright.", true))
 	UiKit.check(box, "Auto exposure", bool(_value("camera.controls.auto_exposure", 0)), func(v): _camera_control("auto_exposure", 1 if v else 0))
@@ -220,6 +231,24 @@ func _build_camera_tab() -> void:
 	UiKit.slider(box, "Sharpness", 0, 255, 1, float(_value("camera.controls.sharpness", 0)), func(v): _camera_control("sharpness", v), true)
 	UiKit.check(box, "Auto white balance", bool(_value("camera.controls.auto_white_balance", 0)), func(v): _camera_control("auto_white_balance", 1 if v else 0))
 	UiKit.slider(box, "White balance (K)", 2000, 8000, 50, float(_value("camera.controls.white_balance", 4500)), func(v): _camera_control("white_balance", v), true)
+
+
+func _find_fastest_mode() -> void:
+	status_label.text = "Trying camera modes... (the picture pauses for a moment)"
+	TrackerClient.send_command({"cmd": "camera_fastest", "save": true}, func(reply):
+		if not reply.get("ok", false):
+			status_label.text = "Fastest mode failed: %s" % reply.get("error", "")
+			return
+		var chosen: Dictionary = reply.get("chosen", {})
+		_merge_into(config, {"camera": {"width": chosen.get("width", 640), "height": chosen.get("height", 480),
+				"fps": chosen.get("fps_requested", 60)}})
+		var lines := ["Now %dx%d at %d fps (measured %.0f)" % [int(chosen.get("width", 0)), int(chosen.get("height", 0)),
+				int(chosen.get("fps_requested", 0)), float(chosen.get("fps_measured", 0))]]
+		for mode in reply.get("modes", []):
+			lines.append("  %dx%d asked %d: driver says %.0f, measured %.0f%s" % [int(mode.get("width", 0)),
+					int(mode.get("height", 0)), int(mode.get("fps_requested", 0)), float(mode.get("fps_reported", 0)),
+					float(mode.get("fps_measured", 0)), "  (" + str(mode["error"]) + ")" if mode.has("error") else ""])
+		status_label.text = "\n".join(lines))
 
 
 func _camera_control(control: String, value: Variant) -> void:
@@ -247,7 +276,7 @@ func _build_detection_tab() -> void:
 	learn_row.add_child(UiKit.button("Clear background", func():
 		TrackerClient.send_command({"cmd": "clear_background", "save": true}, _on_simple_reply), 200))
 	UiKit.slider(box, "Grow masked areas (px)", 0, 30, 1, float(_value("background.dilate_px", 6)), func(v): _set_path("background.dilate_px", int(v)))
-	UiKit.slider(box, "Frames to watch", 5, 120, 1, float(_value("background.learn_frames", 30)), func(v): _set_path("background.learn_frames", int(v)))
+	UiKit.slider(box, "Seconds to watch", 0.2, 3.0, 0.1, float(_value("background.learn_seconds", 0.5)), func(v): _set_path("background.learn_seconds", v))
 	box.add_child(UiKit.heading("Blob cleanup"))
 	UiKit.slider(box, "Blur (px)", 0, 15, 1, float(_value("processing.blur", 3)), func(v): _set_path("processing.blur", int(v)))
 	UiKit.slider(box, "Open iterations (speckles)", 0, 5, 1, float(_value("processing.open_iterations", 1)), func(v): _set_path("processing.open_iterations", int(v)))
@@ -279,6 +308,17 @@ func _rebuild_colour_tab() -> void:
 	if ctrl.is_empty():
 		return
 	box.add_child(UiKit.heading(str(ctrl.get("name", "Controller"))))
+	var preset_names: Array = ["(pick a preset)"]
+	preset_names.append_array(_led_presets.keys())
+	UiKit.option(box, "Sphere colour preset", preset_names, preset_names[0], func(v):
+		if not _led_presets.has(v):
+			return
+		var preset: Dictionary = _led_presets[v]
+		ctrl["led"] = preset["led"].duplicate()
+		ctrl["hsv_min"] = preset["hsv_min"].duplicate()
+		ctrl["hsv_max"] = preset["hsv_max"].duplicate()
+		_patch({"controllers": controllers})
+		_rebuild_colour_tab())
 	var led_row := UiKit.row(box)
 	led_row.add_child(UiKit.label("Sphere colour (LED)"))
 	var picker := ColorPickerButton.new()

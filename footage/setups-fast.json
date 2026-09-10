@@ -1,0 +1,15 @@
+[
+  {
+    "scene": "living_room",
+    "background": {
+      "regions": 2,
+      "covered_percent": 4.7,
+      "size": [
+        320,
+        240
+      ]
+    },
+    "focal_px": 590.08,
+    "radius_offset_px": 0.329
+  }
+]

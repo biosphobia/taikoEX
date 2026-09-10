@@ -26,9 +26,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "backend": "opencv",
         "index": 0,               # camera index for opencv / pseye
         "video_path": "",         # used by the "video" backend
+        # Resolution and frame rate to ask the driver for.  The PS3 Eye does
+        # up to 75 fps at 640x480 and up to 187 fps at 320x240; press
+        # "Fastest mode" in the calibration screen (the camera_fastest
+        # command) to try the modes in `fast_modes` and keep the quickest one
+        # the driver really delivers.
         "width": 640,
         "height": 480,
         "fps": 60,
+        # Pixel format to request from an OpenCV driver, e.g. "MJPG" - many
+        # ordinary webcams only reach their top frame rate compressed.  Leave
+        # empty for the PS3 Eye, which streams raw frames.
+        "fourcc": "",
+        # Modes tried by "Fastest mode", quickest first: [width, height, fps].
+        "fast_modes": [[320, 240, 187], [320, 240, 150], [320, 240, 125], [320, 240, 100],
+                       [320, 240, 75], [640, 480, 75], [640, 480, 60], [640, 480, 30]],
+        # A mode counts as delivered when it measures at least this share of
+        # the requested rate.
+        "fast_mode_min_ratio": 0.9,
         "flip_horizontal": False,
         "flip_vertical": False,
         "rotate_degrees": 0,      # 0, 90, 180 or 270
@@ -89,7 +104,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     ],
     "optics": {
-        # Focal length in pixels at the configured resolution.  PS3 Eye:
+        # Every pixel measurement in this section, and every "_px" setting
+        # under "processing", is given for a frame `reference_width` pixels
+        # wide and scaled to whatever resolution the camera is running at.
+        # So a calibration done at 640x480 still holds after switching to
+        # 320x240 for speed, and the crop, the mask and the size limits move
+        # with it.
+        "reference_width": 640,
+        # Focal length in pixels at the reference width.  PS3 Eye:
         # ~545 px at 640x480 with the narrow (red dot) lens setting,
         # ~420 px with the wide (blue dot) setting.  Calibrate to be exact.
         "focal_px": 545.0,
@@ -99,6 +121,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "k1": 0.0,                         # radial distortion (optional)
         # A glowing sphere measures about a pixel bigger than it is (blended
         # edge pixels).  The two-point distance calibration measures this.
+        # It is a per-pixel effect, so unlike the focal length it is the same
+        # number of pixels at every resolution and is not scaled.
         "radius_offset_px": 0.0,
     },
     "world": {
@@ -200,7 +224,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Automatic mask learning: the tracker turns the spheres off for a
         # moment, looks at what still matches each controller's colour and
         # masks those areas away (lamps, TVs, posters, sunlit walls).
-        "learn_frames": 30,           # frames to average with the LEDs off
+        "learn_seconds": 0.5,         # how long to watch with the LEDs off (a flickering screen needs a moment)
         "dilate_px": 6,               # grow each masked area by this much
         "min_area_px": 12,            # ignore specks smaller than this
         "auto_relearn_s": 0.0,        # >0: relearn automatically every N seconds
@@ -211,6 +235,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "scene": "clean",             # clean, living_room, far_shelf, floor_low, sunny
         "camera_position": [],        # override the scene's camera pose if you want
         "camera_target": [],
+        # The virtual lens, in pixels at 640 wide.  Kept apart from
+        # optics.focal_px on purpose: that is what the calibration *finds*,
+        # this is the truth it is measured against.
+        "focal_px": 545.0,
         "imu_noise": 0.01,
         # Step time by one frame per read instead of following the wall clock.
         # Used by the tests, so that a busy machine cannot change the result.
@@ -220,6 +248,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "show_window": False,         # OpenCV window with the processed image
         "print_hits": True,
     },
+}
+
+# Sphere colours that track well, with the HSV range that catches each one
+# (OpenCV hue runs 0..179).  The calibration screen offers these as presets;
+# "Sample colour" then fine-tunes the range for your camera and lighting.
+# Two hands need two colours that are far apart in hue: magenta + cyan is the
+# safest pair, green + magenta and blue + yellow also work.  White is only
+# usable in a dark room, because every bright thing matches it.
+LED_PRESETS: dict[str, dict[str, Any]] = {
+    "magenta": {"led": [255, 0, 255], "hsv_min": [135, 80, 100], "hsv_max": [175, 255, 255]},
+    "cyan":    {"led": [0, 255, 255], "hsv_min": [80, 80, 100], "hsv_max": [110, 255, 255]},
+    "green":   {"led": [0, 255, 0], "hsv_min": [45, 80, 100], "hsv_max": [80, 255, 255]},
+    "blue":    {"led": [0, 60, 255], "hsv_min": [105, 80, 100], "hsv_max": [130, 255, 255]},
+    "yellow":  {"led": [255, 255, 0], "hsv_min": [18, 80, 100], "hsv_max": [40, 255, 255]},
+    "orange":  {"led": [255, 100, 0], "hsv_min": [5, 100, 100], "hsv_max": [20, 255, 255]},
+    "red":     {"led": [255, 0, 0], "hsv_min": [168, 100, 100], "hsv_max": [6, 255, 255]},
+    "white":   {"led": [255, 255, 255], "hsv_min": [0, 0, 200], "hsv_max": [179, 60, 255]},
 }
 
 

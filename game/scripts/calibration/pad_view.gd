@@ -48,7 +48,8 @@ func _draw() -> void:
 		if not controller.get("visible", false):
 			continue
 		var w: Array = controller.get("world", [0, 0, 0])
-		var colour := GameSkin.color("hit_left" if int(controller.get("id", 0)) == 0 else "hit_right")
+		var colour := ControllerModel.led_colour(controller,
+				GameSkin.color("hit_left" if int(controller.get("id", 0)) == 0 else "hit_right"))
 		var top := top_center + Vector2(float(w[0]), -float(w[2])) * scale_px_per_m
 		var height_px: float = clamp(6.0 + float(w[1]) * 40.0, 3.0, 16.0)
 		draw_circle(top, height_px, colour)

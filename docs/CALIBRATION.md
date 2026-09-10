@@ -20,8 +20,29 @@ pixels - watch them while you tune.
 ## 1. Camera
 
 * **Backend / index / resolution / fps** - pick the device.  Press *Apply camera*.
-  640x480 at 60 fps is the sweet spot; 320x240 at up to 187 fps works with the
-  `pseye` backend if you prefer speed over accuracy.
+* **Fastest mode** - tries the modes under `camera.fast_modes` quickest first,
+  measures what the driver *really* delivers (drivers accept a request for
+  187 fps and then quietly hand over 30) and keeps the first one that does.
+  A PS3 Eye lands on 320x240 at 187 fps; the status line under the preview
+  shows the measured rate next to what the driver claims and what was asked
+  for, so a driver that lies is caught at once.  Do this before the Space
+  tab: the two distances are best measured at the resolution you play at.
+  (Switching later keeps the calibration roughly right - every pixel setting
+  is written for `optics.reference_width` and scaled with the frame - but
+  redo the two distances to make it exact.)
+* **Why the frame rate matters** - a stroke lasts about a tenth of a second,
+  so at 60 fps the camera sees six frames of it and at 187 fps eighteen.
+  More frames means the position filter follows the hand instead of
+  smoothing the bottom off the stroke, and the motion fallback times a hit
+  to a couple of milliseconds instead of a dozen.  The accelerometer timing
+  does not need it, the camera's idea of *where* the hand was at that
+  moment does.  The price is a smaller picture: a sphere 1.5 m away is
+  four pixels across instead of eight, so depth is noisier - the position
+  filter averages it away, and at a camera distance of one to two metres
+  don and ka still come out right.
+* **Pixel format** - only for ordinary webcams through OpenCV: many of them
+  reach their top rate only compressed (`MJPG`).  Leave it empty for the
+  PS3 Eye.
 * **Flip / rotate** - if you mounted the camera upside down.
 * **Exposure and gain** (live) - turn *Auto exposure* off, then lower exposure and gain
   until the room is nearly black and the spheres are still clearly visible.  This is the
@@ -63,8 +84,15 @@ colour.
 
 Pick the controller to edit (0 = left hand, 1 = right hand).
 
-* **Sphere colour** - the LED colour sent to the controller.  Magenta and cyan are the
-  best pair: far apart in hue and unlike skin, wood and most rooms.
+* **Sphere colour preset** - magenta, cyan, green, blue, yellow, orange, red or white,
+  each with the HSV range that catches it.  Magenta and cyan are the best pair: far
+  apart in hue and unlike skin, wood and most rooms; green + magenta and blue + yellow
+  also work.  White only works in a dark room, because everything bright matches it.
+  The presets live in `LED_PRESETS` in `tracker/taiko_tracker/config.py`.
+* **Sphere colour** - the LED colour sent to the controller, for anything the presets
+  do not cover.  Whatever you pick here is the colour the controller is drawn in
+  everywhere - the 3D view paints each PS Move in its own LED colour, so the magenta
+  model is the magenta hand.
 * **Sample colour** - press the button under the preview (or *Sample colour from preview
   centre*), then click on the sphere.  The HSV range is set from those pixels with a
   margin.  Repeat for the other controller.
@@ -190,6 +218,6 @@ table.
 * Left/right and up/down positions are far more accurate than depth, and downward strokes
   are what the pads detect, so timing stays accurate even when depth is noisy.  Put the
   camera in front of you rather than beside you so that "down" is not "towards the lens".
-* 60 fps means a frame every 16 ms; the stroke's crossing time is interpolated between
-  frames, so timing error is well under that.  Add *Latency compensation* for the
-  camera's own delay (about one to two frames).
+* 60 fps means a frame every 16 ms, 187 fps one every 5 ms; the stroke's crossing time
+  is interpolated between frames, so timing error is well under that.  Add *Latency
+  compensation* for the camera's own delay (about one to two frames).
