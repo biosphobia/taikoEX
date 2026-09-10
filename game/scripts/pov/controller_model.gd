@@ -19,6 +19,9 @@ var has_orientation := false
 
 var _sphere: MeshInstance3D
 var _handle: MeshInstance3D
+var _bright_material: StandardMaterial3D
+var _dim_material: StandardMaterial3D
+var _showing_seen := true
 var _glow: OmniLight3D
 var _trail: ImmediateMesh
 var _trail_points: Array[Vector3] = []
@@ -31,6 +34,8 @@ func _init(id: int, led_colour: Color) -> void:
 
 
 func _ready() -> void:
+	_bright_material = Pov3D.glowing_material(colour)
+	_dim_material = Pov3D.glowing_material(colour, 0.25)
 	var custom_path := Paths.data_dir().path_join("models/controller.glb")
 	if FileAccess.file_exists(custom_path):
 		_custom = Pov3D.load_model(custom_path)
@@ -79,7 +84,7 @@ func _build_default_shape() -> void:
 	sphere_mesh.rings = 12
 	_sphere.mesh = sphere_mesh
 	_sphere.position = Vector3(0, HANDLE_LENGTH, 0)
-	_sphere.material_override = Pov3D.glowing_material(colour)
+	_sphere.material_override = _bright_material
 	add_child(_sphere)
 
 
@@ -98,16 +103,21 @@ func apply_state(entry: Dictionary) -> void:
 		quaternion = Quaternion(float(quat[1]), float(quat[2]), float(quat[3]), float(quat[0])).normalized()
 	var basis := Basis(quaternion)
 	global_transform = Transform3D(basis, sphere_position - basis.y * HANDLE_LENGTH)
-	var dim := 1.0 if visible_to_camera else 0.25
-	modulate_alpha(dim)
+	set_seen_by_camera(visible_to_camera)
 	_push_trail(sphere_position)
 
 
-func modulate_alpha(alpha: float) -> void:
+## Dim the model while the camera cannot see the sphere, so it is obvious that
+## the position on screen is the filter coasting rather than a fresh reading.
+func set_seen_by_camera(seen: bool) -> void:
+	if seen == _showing_seen:
+		return
+	_showing_seen = seen
+	var alpha := 1.0 if seen else 0.25
 	if _glow:
 		_glow.light_energy = 1.1 * alpha
 	if _sphere:
-		_sphere.material_override = Pov3D.glowing_material(colour, alpha)
+		_sphere.material_override = _bright_material if seen else _dim_material
 
 
 func _push_trail(point: Vector3) -> void:
