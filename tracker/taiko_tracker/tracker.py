@@ -393,12 +393,27 @@ class Tracker:
         return {"path": str(self.config.path)}
 
     def cmd_reset_config(self, msg):
+        """Back to DEFAULT_CONFIG, with every live object rebuilt from it."""
         self.config = Config({}, self.config.path)
         self.detector.config = self.config
         self.moves.config = self.config
-        self.apply_config_changes({"camera": {}, "processing": {}, "optics": {}, "world": {}, "pads": [], "controllers": []})
-        self.apply_config_changes({"pads": DEFAULT_CONFIG["pads"]})
+        self.background.config = self.config
+        self.reapply_config()
         return {"config": self.config.data}
+
+    def reapply_config(self) -> None:
+        """Rebuild everything that caches part of the config, from the config as it is now."""
+        try:
+            self.open_camera()
+        except Exception as exc:
+            print(f"[camera] reopen failed: {exc}")
+        self.detector.invalidate()
+        self.model = PinholeModel(self.config["optics"], *self.frame_size)
+        self.world = WorldTransform(self.config["world"])
+        self.reload_pads()
+        self.controllers = {int(c["id"]): TrackedController(c, self.config["fusion"], self.config["imu"])
+                            for c in self.config["controllers"]}
+        self.keys.hold_s = float(self.config["osu"]["key_hold_ms"]) / 1000.0
 
     def cmd_quit(self, msg):
         self.running = False

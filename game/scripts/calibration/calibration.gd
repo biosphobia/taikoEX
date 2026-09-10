@@ -306,6 +306,7 @@ func _rebuild_colour_tab() -> void:
 		if int(c["id"]) == controller_id:
 			ctrl = c
 	if ctrl.is_empty():
+		box.add_child(UiKit.label("The tracker config has no controller %d. Press 'Reset to defaults' below, or add one under \"controllers\" in tracker_config.json." % controller_id, true))
 		return
 	box.add_child(UiKit.heading(str(ctrl.get("name", "Controller"))))
 	var preset_names: Array = ["(pick a preset)"]

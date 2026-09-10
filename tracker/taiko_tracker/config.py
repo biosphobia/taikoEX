@@ -299,6 +299,11 @@ class Config:
     def __init__(self, data: dict | None = None, path: Path | None = None):
         self.path = path or default_config_path()
         self.data = deep_merge(DEFAULT_CONFIG, data or {})
+        # A config without controllers or pads cannot track anything; treat
+        # an empty list as "use the defaults" rather than as a choice.
+        for key in ("controllers", "pads"):
+            if not self.data.get(key):
+                self.data[key] = copy.deepcopy(DEFAULT_CONFIG[key])
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":

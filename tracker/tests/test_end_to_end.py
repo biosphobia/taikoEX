@@ -254,3 +254,31 @@ def test_fastest_camera_mode_keeps_tracking_and_timing():
         assert max(offsets) - min(offsets) < 0.020, offsets
     finally:
         tracker.close()
+
+
+def test_reset_config_keeps_the_controllers_and_pads():
+    """Reset to defaults must leave a config that can track: two controllers,
+    the drum, and every live object rebuilt from them."""
+    tracker = make_tracker()
+    try:
+        tracker.handle_command({"cmd": "set_config", "patch": {"controllers": [{"id": 0, "name": "Only one", "led": [0, 255, 0],
+                                                                                 "hsv_min": [45, 80, 100], "hsv_max": [80, 255, 255]}]}})
+        assert len(tracker.controllers) == 1
+        reply = tracker.handle_command({"cmd": "reset_config"})
+        assert reply["ok"], reply
+        assert [c["id"] for c in reply["config"]["controllers"]] == [0, 1]
+        assert [p["id"] for p in reply["config"]["pads"]] == ["don", "ka"]
+        assert sorted(tracker.controllers) == [0, 1]
+        run_frames(tracker, 5)
+        state = tracker.build_state(now(tracker), [])
+        assert len(state["controllers"]) == 2
+    finally:
+        tracker.close()
+
+
+def test_empty_controller_list_in_a_saved_config_falls_back_to_defaults():
+    from taiko_tracker.config import Config
+
+    config = Config({"controllers": [], "pads": []})
+    assert [c["id"] for c in config["controllers"]] == [0, 1]
+    assert [p["id"] for p in config["pads"]] == ["don", "ka"]
