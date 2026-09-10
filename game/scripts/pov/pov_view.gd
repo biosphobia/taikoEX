@@ -254,13 +254,17 @@ func _update_status(state: Dictionary) -> void:
 func _apply_view() -> void:
 	match view_mode:
 		"side":
-			camera.global_transform = Transform3D(Basis(), Vector3(1.8, 0.5, 0.1)).looking_at(Vector3(0, 0.0, 0), Vector3.UP)
+			var centre := _drum_centre()
+			camera.global_transform = Transform3D(Basis(), centre + Vector3(1.8, 0.5, 0.1)).looking_at(centre, Vector3.UP)
 		"camera":
 			# Sit where the PS3 Eye is, looking where it looks.
 			if camera_marker.pose.is_empty():
 				return
 			camera.global_transform = camera_marker.global_transform
 		_:
+			# Your own head, fixed where the calibrated origin says you stand.
+			# It does not follow the drum: the whole point of moving the drum is
+			# to see where it ends up in front of you.
 			var basis := Basis.from_euler(Vector3(deg_to_rad(eye_pitch), deg_to_rad(eye_yaw), 0))
 			camera.global_transform = Transform3D(basis, eye_offset)
 
@@ -307,21 +311,27 @@ func _scale(factor: float) -> void:
 	TrackerClient.send_command({"cmd": "nudge_pads", "scale": factor}, _after_change)
 
 
+## Where the drum sits, averaged over its pads.
+func _drum_centre() -> Vector3:
+	if drum == null or drum.pads.is_empty():
+		return Vector3.ZERO
+	var centre := Vector3.ZERO
+	for pad in drum.pads:
+		var c: Array = pad.get("center", [0, 0, 0])
+		centre += Vector3(float(c[0]), float(c[1]), float(c[2]))
+	return centre / drum.pads.size()
+
+
 func _place_at_controller(id: int) -> void:
 	var model: ControllerModel = controllers.get(id)
 	if model == null:
 		return
 	var target := model.global_transform.origin + model.global_transform.basis.y * ControllerModel.HANDLE_LENGTH
-	var centre := Vector3.ZERO
-	for pad in drum.pads:
-		var c: Array = pad.get("center", [0, 0, 0])
-		centre += Vector3(float(c[0]), float(c[1]), float(c[2]))
-	if not drum.pads.is_empty():
-		centre /= drum.pads.size()
-	var delta := target - centre
+	var delta := target - _drum_centre()
 	TrackerClient.send_command({"cmd": "nudge_pads", "delta": [delta.x, delta.y, delta.z]}, _after_change)
 
 
 func _after_change(reply: Dictionary) -> void:
 	if reply.get("ok", false) and reply.has("pads"):
 		drum.rebuild(reply["pads"])
+		_apply_view()
