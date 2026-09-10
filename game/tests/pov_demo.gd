@@ -28,9 +28,10 @@ func _show_caption() -> void:
 	var label := UiKit.heading(caption)
 	label.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	label.offset_left = 20
-	label.offset_top = 120
-	label.offset_right = -360
-	label.offset_bottom = 154
+	label.offset_top = 118
+	label.offset_right = -360      # clear of the camera view in the corner
+	label.offset_bottom = 190
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	label.add_theme_color_override("font_color", GameSkin.color("good"))
 	layer.add_child(label)
 
