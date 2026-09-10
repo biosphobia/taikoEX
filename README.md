@@ -121,7 +121,11 @@ tracker/              Python tracker (see tracker/README.md)
 tools/                asset generators and the tracker demo recorder
 docs/                 documentation
 .github/workflows     CI: tests, Windows build, GitHub release
-footage/              demo videos
+footage/              demo videos, all recorded against the simulated camera:
+                        taikoex-game-demo    a walk through the whole game
+                        taikoex-tracker-view what the camera sees, and its masks
+                        taikoex-setups       the 3D view in each of the five rooms
+                        setup-<room>         those five, one file each
 ```
 
 ## Tests
