@@ -184,6 +184,19 @@ def fit_sphere_outline(contour, area: float) -> tuple[float, float, float, float
     return cx, cy, radius, float(enclosing_radius), elongation, completeness
 
 
+def capsule_circularity(elongation: float) -> float:
+    """How round a smeared disc looks: 1.0 unsmeared, lower as it stretches."""
+    e = max(1.0, elongation)
+    perimeter = 2.0 * math.pi + 4.0 * (e - 1.0)
+    return 4.0 * math.pi * capsule_area_factor(e) / (perimeter * perimeter)
+
+
+def capsule_fill_ratio(elongation: float) -> float:
+    """Area of a smeared disc over the area of the circle drawn around it."""
+    e = max(1.0, elongation)
+    return capsule_area_factor(e) / (math.pi * e * e)
+
+
 def capsule_area_factor(elongation: float) -> float:
     """Area of a smeared disc divided by its radius squared.
 
@@ -203,6 +216,11 @@ def best_circle(mask: np.ndarray, processing: dict,
 
     ``expected`` is the (x, y, r) of the previous detection; blobs close to it
     get a large bonus so a bigger distractor elsewhere cannot steal the track.
+
+    The roundness and fullness a blob has to reach are measured *against the
+    shape it should have been*.  A sphere smeared across the frame during the
+    exposure is a long capsule, and judging it against a circle would throw
+    away every fast movement - which is precisely when the tracking is needed.
     """
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     min_r = float(processing.get("min_radius_px", 3))
@@ -222,10 +240,13 @@ def best_circle(mask: np.ndarray, processing: dict,
         perimeter = cv2.arcLength(contour, True)
         circularity = 4.0 * math.pi * area / (perimeter * perimeter) if perimeter > 0 else 0.0
         fill_ratio = area / (math.pi * enclosing_radius * enclosing_radius)
-        if circularity < min_circ or fill_ratio < min_fill:
+        roundness = circularity / capsule_circularity(elongation)
+        fullness = fill_ratio / capsule_fill_ratio(elongation)
+        if roundness < min_circ or fullness < min_fill:
             continue
-        # Round, well filled blobs win; a square poster (circularity 0.78,
-        # fill 0.64) needs several times the area of a sphere to outrank it.
+        # Scoring stays absolute even though acceptance does not: among the
+        # blobs that could be a sphere, the roundest and fullest is the most
+        # likely one, and a long smear is a worse bet than a clean disc.
         score = area * circularity * fill_ratio * fill_ratio
         if expected is not None:
             distance = math.hypot(cx - expected[0], cy - expected[1])

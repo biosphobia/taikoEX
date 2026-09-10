@@ -26,8 +26,11 @@ func _draw() -> void:
 	draw_line(Vector2(0, top_h), Vector2(size.x, top_h), Color(0.3, 0.3, 0.35), 1.0)
 	draw_string(ThemeDB.fallback_font, Vector2(8, 18), "top view (x right, z away from camera)", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.7, 0.7, 0.75))
 	draw_string(ThemeDB.fallback_font, Vector2(8, top_h + 18), "side view (height above pads)", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.7, 0.7, 0.75))
-	# Pads.
-	for pad in pads:
+	# Pads, widest first: a ring is drawn by punching its middle back out to the
+	# background, which would erase a smaller pad already drawn underneath it.
+	var ordered := pads.duplicate()
+	ordered.sort_custom(func(a, b): return float(a.get("radius", 0.1)) > float(b.get("radius", 0.1)))
+	for pad in ordered:
 		var c: Array = pad.get("center", [0, 0, 0])
 		var radius := float(pad.get("radius", 0.1)) * scale_px_per_m
 		var colour := GameSkin.color("don" if pad.get("kind", "don") == "don" else "ka")

@@ -45,7 +45,8 @@ def compose(tracker: Tracker, hits: list, fps: float) -> np.ndarray:
     cv2.putText(canvas, "camera + detections", (8, 20), font, 0.55, (255, 255, 255), 1)
     cv2.putText(canvas, "colour masks (what the tracker keeps)", (w + 8, 20), font, 0.55, (255, 255, 255), 1)
     y = h + 24
-    cv2.putText(canvas, f"{fps:4.0f} fps   world calibrated: {tracker.config['world']['calibrated']}", (8, y), font, 0.55, (200, 200, 200), 1)
+    cv2.putText(canvas, f"{fps:4.0f} fps   focal {tracker.model.focal:.0f} px   "
+                f"glow {tracker.model.radius_offset:+.2f} px", (8, y), font, 0.55, (200, 200, 200), 1)
     for tracked in tracker.controllers.values():
         y += 22
         if tracked.visible:
@@ -57,7 +58,8 @@ def compose(tracker: Tracker, hits: list, fps: float) -> np.ndarray:
         cv2.putText(canvas, text, (8, y), font, 0.55, colour, 1)
     y = h + 24
     for hit in hits[-4:]:
-        cv2.putText(canvas, f"HIT {hit.pad_id:10s} hand {hit.controller_id}  {hit.speed:.1f} m/s", (w + 8, y), font, 0.55, (80, 255, 120), 1)
+        cv2.putText(canvas, f"HIT {hit.kind:4s} {hit.side:5s} hand {hit.controller_id}  {hit.speed:.1f} m/s",
+                    (w + 8, y), font, 0.55, (80, 255, 120), 1)
         y += 22
     return canvas
 
@@ -67,12 +69,15 @@ def main() -> int:
     parser.add_argument("output", type=Path)
     parser.add_argument("--seconds", type=float, default=30.0)
     parser.add_argument("--chart", type=Path, default=ROOT / "game/data/songs/demo/demo.tja")
+    parser.add_argument("--scene", default="living_room", help="which simulated room to use")
     args = parser.parse_args()
 
     config = Config({
         "camera": {"backend": "simulated", "fps": 60},
-        "processing": {"mask_polygons": [[[560, 10], [640, 10], [640, 70], [560, 70]]]},
-        "hits": {"latency_compensation_ms": 0.0},
+        # A virtual clock, so the tracker sees a steady sixty frames a second
+        # whatever this machine can render.  Otherwise the recording would show
+        # smears and speeds that no real camera would produce.
+        "simulation": {"scene": args.scene, "virtual_clock": True},
         "network": {"state_port": 47830, "command_port": 47831, "preview_port": 47832, "preview_enabled": False},
         "hid": {"enabled": False}, "debug": {"print_hits": False},
     }, ROOT / "build" / "unused_config.json")
@@ -81,30 +86,43 @@ def main() -> int:
     tracker.on_hit = lambda hit: hits.append(hit)
     sim = tracker.camera
 
-    # World calibration exactly like a player would do it.
+    def steps(count: int) -> None:
+        for _ in range(count):
+            tracker.step()
+
+    # The same calibration a player performs, in the same order.
+    tracker.handle_command({"cmd": "learn_background"})
+    while tracker.background.active:
+        tracker.step()
+    steps(5)
+    tracker.handle_command({"cmd": "calibrate_distance_reset"})
+    for distance in (0.7, 1.5):
+        sim.goto(0, (sim.virtual.position + sim.virtual.rotation_cam_to_world[:, 2] * distance).tolist())
+        steps(25)
+        tracker.handle_command({"cmd": "calibrate_distance", "controller": 0, "distance_m": distance})
     for name, point in (("origin", [0, 0, 0]), ("right", [0.4, 0, 0]), ("forward", [0, 0, -0.4])):
         sim.goto(0, point)
-        for _ in range(8):
-            tracker.step()
+        steps(30)
         tracker.handle_command({"cmd": "world_capture", "point": name, "controller": 0})
     sim.goto(0, [-0.2, 0.2, 0.0])
-    sim.play_chart(args.chart.read_text(encoding="utf-8"), time.time() + 1.0)
+    steps(10)
+    sim.play_chart(args.chart.read_text(encoding="utf-8"), sim.clock() + 1.0)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     raw_path = args.output.with_suffix(".raw.avi")
-    writer = None
-    start = time.time()
-    frames = 0
-    while time.time() - start < args.seconds:
+    rate = float(config["camera"]["fps"])
+    canvases = []
+    finish = sim.clock() + args.seconds
+    while sim.clock() < finish:
         tracker.step()
-        canvas = compose(tracker, hits, tracker.fps)
-        if writer is None:
-            writer = cv2.VideoWriter(str(raw_path), cv2.VideoWriter_fourcc(*"MJPG"), 60, (canvas.shape[1], canvas.shape[0]))
-        writer.write(canvas)
-        frames += 1
-    writer.release()
+        canvases.append(compose(tracker, hits, rate))
     tracker.close()
-    print(f"{frames} frames, {len(hits)} hits detected")
+    writer = cv2.VideoWriter(str(raw_path), cv2.VideoWriter_fourcc(*"MJPG"), rate,
+                             (canvases[0].shape[1], canvases[0].shape[0]))
+    for canvas in canvases:
+        writer.write(canvas)
+    writer.release()
+    print(f"{len(canvases)} frames of camera time, {len(hits)} hits detected")
 
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:

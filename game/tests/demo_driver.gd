@@ -62,7 +62,7 @@ func _process(delta: float) -> void:
 				_enter("calibration", "res://scenes/calibration.tscn")
 		"calibration":
 			_drive_calibration(delta)
-			if phase_time > 16.0:
+			if phase_time > 20.0:
 				_enter("select", "res://scenes/song_select.tscn")
 		"select":
 			if phase_time > 3.0:
@@ -106,22 +106,29 @@ func _drive_calibration(delta: float) -> void:
 	if screen == null or screen.get("tabs") == null or not screen.get("_built"):
 		return
 	var steps := [
-		[1.0, func(): screen.tabs.current_tab = 3],
-		[1.5, func(): TrackerClient.send_command({"cmd": "sim_goto", "controller": 0, "position": [0, 0, 0]})],
-		[2.5, func(): TrackerClient.send_command({"cmd": "world_capture", "point": "origin", "controller": 0}, _print_reply)],
-		[3.0, func(): TrackerClient.send_command({"cmd": "sim_goto", "controller": 0, "position": [0.4, 0, 0]})],
-		[4.0, func(): TrackerClient.send_command({"cmd": "world_capture", "point": "right", "controller": 0}, _print_reply)],
-		[4.5, func(): TrackerClient.send_command({"cmd": "sim_goto", "controller": 0, "position": [0, 0, -0.4]})],
-		[5.5, func(): TrackerClient.send_command({"cmd": "world_capture", "point": "forward", "controller": 0}, _print_reply)],
-		[6.0, func(): TrackerClient.send_command({"cmd": "sim_goto", "controller": 0, "position": [-0.2, 0.2, 0]})],
-		[6.5, func(): screen.tabs.current_tab = 4],
-		[10.5, func(): screen.tabs.current_tab = 2],
-		[13.0, func(): screen.tabs.current_tab = 1],
+		# Learn the room first, then the distance scale, then the axes - the
+		# same order the calibration screen and the docs put them in.
+		[1.0, func(): screen.tabs.current_tab = 1],
+		[1.2, func(): TrackerClient.send_command({"cmd": "learn_background"}, _print_reply)],
+		[2.4, func(): screen.tabs.current_tab = 3],
+		[2.6, func(): TrackerClient.send_command({"cmd": "calibrate_distance_reset"})],
+		[2.8, func(): _distance_sample(0.7)],
+		[4.0, func(): _distance_sample(1.5)],
+		[5.2, func(): TrackerClient.send_command({"cmd": "sim_goto", "controller": 0, "position": [0, 0, 0]})],
+		[6.4, func(): TrackerClient.send_command({"cmd": "world_capture", "point": "origin", "controller": 0}, _print_reply)],
+		[6.8, func(): TrackerClient.send_command({"cmd": "sim_goto", "controller": 0, "position": [0.4, 0, 0]})],
+		[8.0, func(): TrackerClient.send_command({"cmd": "world_capture", "point": "right", "controller": 0}, _print_reply)],
+		[8.4, func(): TrackerClient.send_command({"cmd": "sim_goto", "controller": 0, "position": [0, 0, -0.4]})],
+		[9.6, func(): TrackerClient.send_command({"cmd": "world_capture", "point": "forward", "controller": 0}, _print_reply)],
+		[10.0, func(): TrackerClient.send_command({"cmd": "sim_goto", "controller": 0, "position": [-0.25, 0.25, 0]})],
+		[10.2, func(): TrackerClient.send_command({"cmd": "sim_goto", "controller": 1, "position": [0.25, 0.25, 0]})],
+		[10.6, func(): screen.tabs.current_tab = 4],
+		[14.0, func(): screen.tabs.current_tab = 2],
 	]
 	while _step < steps.size() and phase_time >= steps[_step][0]:
 		steps[_step][1].call()
 		_step += 1
-	if phase_time > 6.5:
+	if phase_time > 10.8:
 		_hit_pads(delta)
 
 
@@ -141,6 +148,23 @@ func _hit_pads(delta: float) -> void:
 		TrackerClient.send_command({"cmd": "sim_hit", "pad": pad, "controller": _sim_pad % 2,
 				"at": Time.get_unix_time_from_system() + 0.25})
 		_sim_pad += 1
+
+
+## Hold the controller a known distance in front of the lens and take a sample.
+func _distance_sample(distance: float) -> void:
+	TrackerClient.send_command({"cmd": "sim_truth"}, func(reply):
+		var camera: Dictionary = reply.get("camera", {})
+		var position: Array = camera.get("position", [0, 0, 0])
+		var forward: Array = camera.get("forward", [0, 0, 1])
+		var point := [
+			float(position[0]) + float(forward[0]) * distance,
+			float(position[1]) + float(forward[1]) * distance,
+			float(position[2]) + float(forward[2]) * distance,
+		]
+		TrackerClient.send_command({"cmd": "sim_goto", "controller": 0, "position": point})
+		await get_tree().create_timer(0.8).timeout
+		TrackerClient.send_command({"cmd": "calibrate_distance", "controller": 0,
+				"distance_m": distance}, _print_reply))
 
 
 func _print_reply(reply: Dictionary) -> void:

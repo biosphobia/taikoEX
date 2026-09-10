@@ -76,7 +76,10 @@ colour the tracker thresholds the frame in HSV, then:
   capsule, whose area is `(π + 4(e−1))r²` for an axis ratio `e`; inverting that
   gives the radius the sphere would have had standing still.  Without this a
   fast stroke reads as much closer than it is, which is the difference between
-  a hit and a miss.
+  a hit and a miss.  The same model says how round and how full a blob of that
+  elongation ought to look, so a smeared sphere is judged against a capsule
+  rather than against a circle and is not thrown away for being the wrong
+  shape - fast movement is exactly when the tracking is needed most.
 * **notices when the sphere is not all there.**  Comparing the blob against the
   capsule it should be says how much has been bitten out of it by a hand or the
   drum edge.
@@ -180,11 +183,11 @@ noise and an arm that sweeps across the spheres.  Representative numbers on a
 
 | room | camera | position error | strokes | wrong pad | timing spread |
 | --- | --- | --- | --- | --- | --- |
-| clean | 1.4 m in front | 22 mm | 24/24 | 0 | ±12 ms |
-| living room | 1.6 m, lamp + poster + a face | 68 mm | 23/24 | 0 | ±6 ms |
-| sunny | 1.7 m, window glare, waving arm | 41 mm | 24/24 | 0 | ±12 ms |
-| floor | 1.2 m, on the floor looking up | 299 mm | 18/24 | 0 | ±4 ms |
-| far shelf | 3.3 m, high and 35° to the side | 936 mm | 19/24 | 1 | ±9 ms |
+| clean | 1.4 m in front | 22 mm | 24/24 | 0 | ±10 ms |
+| living room | 1.6 m, lamp + poster + a face | 68 mm | 23/24 | 0 | ±10 ms |
+| sunny | 1.7 m, window glare, waving arm | 40 mm | 24/24 | 0 | ±8 ms |
+| floor | 1.2 m, on the floor looking up | 299 mm | 18/24 | 0 | ±7 ms |
+| far shelf | 3.3 m, high and 35° to the side | 920 mm | 19/24 | 3 | ±11 ms |
 
 Three things are worth drawing out.
 
@@ -193,9 +196,11 @@ staring straight along the direction the hands move, so its idea of where they
 are is thirty centimetres out - and the strokes are still timed to within four
 milliseconds, because that number comes from the accelerometer.
 
-Don and ka are almost never confused, one case in 120 across all five rooms,
+Don and ka are told apart reliably wherever the camera is close enough to see
+the spheres properly: no mistakes at all in the four rooms within two metres,
 because that decision is a sideways measurement across a target twenty
-centimetres wide.
+centimetres wide.  All three errors are in the far-shelf room, where the camera
+is 3.3 m away and its idea of where the hands are is most of a metre out.
 
 Position error grows sharply with distance.  At 3.3 m the spheres are under four
 pixels across and no amount of filtering fixes that.  **Put the camera between

@@ -22,21 +22,21 @@
         480
       ]
     },
-    "focal_px": 557.13,
-    "radius_offset_px": 0.465
+    "focal_px": 559.37,
+    "radius_offset_px": 0.45
   },
   {
     "scene": "far_shelf",
     "background": {
       "regions": 2,
-      "covered_percent": 22.24,
+      "covered_percent": 22.27,
       "size": [
         640,
         480
       ]
     },
-    "focal_px": 560.03,
-    "radius_offset_px": 0.44
+    "focal_px": 554.1,
+    "radius_offset_px": 0.639
   },
   {
     "scene": "floor_low",
@@ -61,7 +61,7 @@
         480
       ]
     },
-    "focal_px": 565.41,
-    "radius_offset_px": 0.383
+    "focal_px": 563.8,
+    "radius_offset_px": 0.435
   }
 ]

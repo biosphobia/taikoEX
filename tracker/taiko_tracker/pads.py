@@ -133,6 +133,7 @@ class HitDetector:
     """
 
     HARD_HIT_SPEED = 3.0   # m/s that counts as strength 1.0
+    MAX_REPORTED_SPEED = 8.0   # nothing faster than this is a hand
 
     def __init__(self, pads: list[Pad], hit_cfg: dict):
         self.pads = pads
@@ -249,6 +250,7 @@ class HitDetector:
         # at the top of the lift, or setting off for the next pad - still has
         # this stroke's approach sitting in the window behind it.
         motion.accel_history.clear()
+        speed = min(float(speed), self.MAX_REPORTED_SPEED)
         strength = max(0.0, min(1.0, speed / self.HARD_HIT_SPEED))
         return [Hit(pad.id, pad.kind, pad.side_for(controller_id), controller_id, when, speed, strength,
                     np.asarray(position).round(4).tolist())]
