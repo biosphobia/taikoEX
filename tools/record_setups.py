@@ -51,14 +51,30 @@ class Tracker:
             [sys.executable, str(ROOT / "tracker" / "run_tracker.py")],
             env={**os.environ, "TAIKO_TRACKER_CONFIG": str(self.config_path)},
             stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.settimeout(3.0)
-        self.sock.bind(("127.0.0.1", 0))
+        self._sockets = threading.local()
+
+    @property
+    def sock(self) -> socket.socket:
+        """One socket per thread.
+
+        The drumming thread and the main thread both send commands, and a reply
+        meant for one would otherwise be read by whichever happened to call
+        recv first - which eventually leaves someone waiting for a reply that
+        has already been thrown away.
+        """
+        existing = getattr(self._sockets, "sock", None)
+        if existing is None:
+            existing = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            existing.settimeout(3.0)
+            existing.bind(("127.0.0.1", 0))
+            self._sockets.sock = existing
+        return existing
 
     def command(self, **message) -> dict:
-        self.sock.sendto(json.dumps(message).encode(), ("127.0.0.1", COMMAND_PORT))
+        sock = self.sock
+        sock.sendto(json.dumps(message).encode(), ("127.0.0.1", COMMAND_PORT))
         try:
-            return json.loads(self.sock.recv(65535).decode())
+            return json.loads(sock.recv(65535).decode())
         except socket.timeout:
             return {"ok": False, "error": "timeout"}
 
@@ -109,11 +125,7 @@ stop_drumming = threading.Event()
 
 
 def keep_drumming(tracker: Tracker, until: float, interval: float = 0.42) -> None:
-    """Feed the simulator a steady stream of strokes for the whole recording.
-
-    Its own socket, because the main thread is talking on the other one and a
-    reply meant for one would be read by the other.
-    """
+    """Feed the simulator a steady stream of strokes for the whole recording."""
     pads = [pad["id"] for pad in tracker.command(cmd="get_pads").get("pads", [])] or ["don"]
     index = 0
     while time.time() < until and not stop_drumming.is_set():
