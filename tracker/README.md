@@ -1,0 +1,40 @@
+# TaikoEX tracker
+
+Camera-based PS Move tracking.  Start it with:
+
+```
+python run_tracker.py                 # camera index 0
+python run_tracker.py --camera 1 --show
+python run_tracker.py --backend simulated --no-hid
+python run_tracker.py --osu           # type keys for osu!taiko
+python run_tracker.py --help
+```
+
+All settings live in `tracker_config.json` next to this file (created on first save;
+every key is documented in `taiko_tracker/config.py`).  The game changes them through
+the calibration screen, but a text editor works just as well.
+
+Module map (each file has a docstring explaining it):
+
+| file | what it does |
+| --- | --- |
+| `taiko_tracker/config.py` | defaults, load / save |
+| `taiko_tracker/camera.py` | OpenCV / pseyepy / video / simulated camera backends |
+| `taiko_tracker/vision.py` | HSV thresholding, blown-out core recovery, blur-proof radius |
+| `taiko_tracker/background.py` | learning what in the room looks like a sphere, and masking it |
+| `taiko_tracker/geometry.py` | pixel + radius -> 3D, two-point distance and world calibration |
+| `taiko_tracker/tracking_filter.py` | the position filter, which trusts direction far more than distance |
+| `taiko_tracker/imu.py` | orientation from the controller's gyro and accelerometer |
+| `taiko_tracker/pads.py` | virtual pads and hit detection |
+| `taiko_tracker/psmove_hid.py` | sphere LED colour and IMU over Bluetooth HID |
+| `taiko_tracker/keysender.py` | keyboard output for osu! mode |
+| `taiko_tracker/network.py` | UDP state / command / preview link to the game |
+| `taiko_tracker/simulation.py` | fake camera, rooms and controllers for tests and demos |
+| `taiko_tracker/tracker.py` | the main loop and every command the game can send |
+
+Tests: `python -m pytest`.  How it all works: [../docs/TRACKING.md](../docs/TRACKING.md).
+
+The simulated backend renders five rooms - `clean`, `living_room`, `far_shelf`,
+`floor_low` and `sunny` - each with its own lamps, screens, sunlight, sensor noise,
+motion blur and an arm that sweeps across the spheres.  Pick one with
+`simulation.scene` in the config, or with the `sim_scene` command.

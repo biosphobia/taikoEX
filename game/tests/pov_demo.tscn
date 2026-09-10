@@ -1,0 +1,11 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/pov_view.tscn" id="1"]
+[ext_resource type="Script" path="res://tests/pov_demo.gd" id="2"]
+
+[node name="PovDemo" type="Node"]
+
+[node name="PovView" parent="." instance=ExtResource("1")]
+
+[node name="Driver" type="Node" parent="."]
+script = ExtResource("2")
