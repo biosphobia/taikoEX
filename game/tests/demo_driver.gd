@@ -90,6 +90,10 @@ func _process(delta: float) -> void:
 				print("[demo] results: ", JSON.stringify(load("res://scripts/gameplay/results.gd").last))
 		"results":
 			if phase_time > 4.0:
+				_enter("pov", "res://scenes/pov_view.tscn")
+		"pov":
+			_hit_pads(delta)
+			if phase_time > 8.0:
 				_enter("osu", "res://scenes/osu_mode.tscn")
 		"osu":
 			_hit_pads(delta)
