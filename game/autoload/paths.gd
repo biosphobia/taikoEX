@@ -39,6 +39,14 @@ func settings_file() -> String:
 	return data_dir().path_join("settings.json")
 
 
+## The tracker's log file: next to its config, which is next to the tracker itself.
+func tracker_log() -> String:
+	var built := install_dir().path_join("tracker").path_join("tracker.log")
+	if FileAccess.file_exists(install_dir().path_join("tracker").path_join("taiko_tracker.exe")):
+		return built
+	return install_dir().path_join("..").path_join("tracker").path_join("tracker.log").simplify_path()
+
+
 ## The tracker executable (build) or the source script (development).
 func tracker_command() -> PackedStringArray:
 	var built := install_dir().path_join("tracker").path_join("taiko_tracker.exe")

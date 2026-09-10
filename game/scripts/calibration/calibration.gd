@@ -72,7 +72,7 @@ func _process(delta: float) -> void:
 		if _retry_timer > 1.5:
 			_retry_timer = 0.0
 			TrackerClient.send_command({"cmd": "get_config"}, _on_config)
-			status_label.text = "Tracker not connected. Start tracker/run_tracker.py (or check ports in Settings)."
+			status_label.text = TrackerClient.status_text() + "\nStart tracker/run_tracker.py by hand, or check the ports in Settings.\nLast lines of the tracker log:\n" + TrackerClient.log_tail(4)
 
 
 # ---------------------------------------------------------------- tracker
@@ -103,6 +103,9 @@ func _on_state(state: Dictionary) -> void:
 		else:
 			parts.append("C%d: not visible" % int(controller["id"]))
 	parts.append("world: " + ("calibrated" if state.get("world_calibrated", false) else "default (%s)" % ",".join(state.get("world_points", []))))
+	if not str(state.get("camera_error", "")).is_empty():
+		parts.append("CAMERA NOT OPEN: %s" % str(state["camera_error"]))
+	parts.append("controllers over Bluetooth: %s" % str(state.get("hid_status", "unknown")))
 	status_label.text = "\n".join(parts)
 
 

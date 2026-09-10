@@ -28,7 +28,8 @@ Any program can use this: the tracker does not care whether Godot is listening.
  "camera_pose": {"position": [0.15, 0.55, -1.25], "right": [1, 0, 0],
                  "up": [0, 0.9, 0.4], "forward": [0, -0.4, 0.9]},
  "pads_revision": 3, "world_calibrated": true, "world_points": [],
- "learning_background": false, "osu": false, "hid_available": true}
+ "learning_background": false, "osu": false, "hid_available": true,
+ "hid_status": "2 connected", "camera_error": ""}
 ```
 
 `t` values are Unix time (`time.time()` / `Time.get_unix_time_from_system()`), so the
@@ -48,6 +49,8 @@ game can convert a hit's timestamp to song time regardless of transport delay.
 | `quat` | orientation as (w, x, y, z), sensor to world |
 | `imu` | whether the orientation estimate has settled |
 | `camera_pose` | where the camera itself is, in the calibrated space |
+| `camera_error` | empty while the camera is open; otherwise why it is not (the tracker keeps running and retrying) |
+| `hid_status` | one line on the Bluetooth side: "2 connected", "no PS Move found ...", "found 2 but could not open one: ..." |
 | `pads_revision` | bumped whenever the pad layout changes, so a client knows to refetch |
 
 `side` on a hit is the hand that struck, not a property of the pad: a pad marked

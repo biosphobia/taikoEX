@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 import time
+import traceback
 from collections import deque
 from pathlib import Path
 
@@ -140,12 +141,35 @@ class Tracker:
         self.recent_hits: list[dict] = []   # last few hits, for the game UI
         self.pads_revision = 0              # bumped whenever the pad layout changes
         self.distance_samples: list[tuple[float, float]] = []   # (radius_px, distance_m)
-        self.open_camera()
+        self.camera_error = ""              # why the camera is not open, for the game to show
+        self._camera_retry_at = 0.0
+        self.try_open_camera()
 
     # ------------------------------------------------------------------
+    def try_open_camera(self) -> bool:
+        """Open the camera, or remember why it could not be opened.
+
+        A camera that will not open is not the end of the tracker: the game
+        still gets state packets carrying the error, so "not connected"
+        comes with a reason (a driver that is not installed, another program
+        holding the device, the wrong index), and the tracker keeps trying
+        every few seconds.
+        """
+        try:
+            self.open_camera()
+        except Exception as exc:
+            self.camera = None
+            self.camera_error = str(exc)
+            self._camera_retry_at = time.time() + float(self.config["camera"].get("retry_s", 3.0))
+            print(f"[camera] could not open: {exc}")
+            return False
+        self.camera_error = ""
+        return True
+
     def open_camera(self) -> None:
         if self.camera is not None:
             self.camera.close()
+            self.camera = None
         self.camera = open_camera(self.config)
         self.camera_mode = self.camera.mode()
         new_size = (int(self.camera_mode["width"]), int(self.camera_mode["height"]))
@@ -165,10 +189,7 @@ class Tracker:
         """Push a partial config into the live objects."""
         self.config.apply_patch(patch)
         if "camera" in patch:
-            try:
-                self.open_camera()
-            except Exception as exc:
-                print(f"[camera] reopen failed: {exc}")
+            self.try_open_camera()
         if "processing" in patch:
             self.detector.invalidate()
         if "optics" in patch:
@@ -353,6 +374,8 @@ class Tracker:
             "pads_revision": self.pads_revision,
             "osu": bool(self.config["osu"]["enabled"]),
             "hid_available": self.moves.available,
+            "hid_status": self.moves.status,
+            "camera_error": self.camera_error,
             "learning_background": self.background.active,
         }
         return state
@@ -403,10 +426,7 @@ class Tracker:
 
     def reapply_config(self) -> None:
         """Rebuild everything that caches part of the config, from the config as it is now."""
-        try:
-            self.open_camera()
-        except Exception as exc:
-            print(f"[camera] reopen failed: {exc}")
+        self.try_open_camera()
         self.detector.invalidate()
         self.model = PinholeModel(self.config["optics"], *self.frame_size)
         self.world = WorldTransform(self.config["world"])
@@ -507,7 +527,7 @@ class Tracker:
         return {"led": controller["led"]}
 
     def cmd_list_controllers(self, msg):
-        return {"devices": self.moves.list_devices(),
+        return {"devices": self.moves.list_devices(), "status": self.moves.status,
                 "connected": {slot: c.serial for slot, c in self.moves.controllers.items()}}
 
     # -- calibration ---------------------------------------------------
@@ -788,6 +808,9 @@ class Tracker:
         for msg, addr in self.commands.poll():
             self.commands.reply(addr, self.handle_command(msg))
         self.moves.update()
+        if self.camera is None:
+            self.step_without_camera()
+            return
         ok, frame, timestamp = self.camera.read()
         self.update_controllers_imu(timestamp)
         if not ok or frame is None:
@@ -799,6 +822,15 @@ class Tracker:
         self.tick_fps()
         if self.config["debug"]["show_window"] and not self.show_debug_window():
             self.running = False
+
+    def step_without_camera(self) -> None:
+        """Keep talking to the game and the controllers while the camera is missing."""
+        now = time.time()
+        if now >= self._camera_retry_at and self.try_open_camera():
+            return
+        self.update_controllers_imu(now)
+        self.state_out.send(self.build_state(now, []))
+        time.sleep(1.0 / 30.0)
 
     def run(self) -> None:
         print(f"taiko tracker {__version__} - Ctrl+C to stop")
@@ -834,6 +866,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     config = Config.load(args.config)
+    log_path = config.path.with_name("tracker.log")
+    log = start_logging(log_path)
     if args.backend:
         config["camera"]["backend"] = args.backend
     if args.camera is not None:
@@ -848,8 +882,53 @@ def main(argv=None) -> int:
     if args.no_hid:
         config["hid"]["enabled"] = False
 
-    Tracker(config).run()
+    try:
+        Tracker(config).run()
+    except Exception as exc:
+        # The game shows the last lines of the log when the tracker is not
+        # answering, so the reason must land there before the process ends.
+        print(f"[tracker] fatal: {exc}")
+        traceback.print_exc()
+        if log is not None:
+            log.flush()
+        return 1
     return 0
+
+
+class Tee:
+    """Write everything printed to the console into the log file as well."""
+
+    def __init__(self, console, log_file):
+        self.console = console
+        self.log_file = log_file
+
+    def write(self, text: str) -> None:
+        for stream in (self.console, self.log_file):
+            try:
+                stream.write(text)
+                stream.flush()
+            except Exception:
+                pass
+
+    def flush(self) -> None:
+        for stream in (self.console, self.log_file):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+
+
+def start_logging(path: Path):
+    """Mirror stdout and stderr into ``tracker.log`` next to the config file."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(path, "w", encoding="utf-8", buffering=1)
+    except OSError:
+        return None
+    sys.stdout = Tee(sys.stdout, log_file)
+    sys.stderr = Tee(sys.stderr, log_file)
+    print(f"taiko tracker {__version__} - log at {path}")
+    return log_file
 
 
 if __name__ == "__main__":

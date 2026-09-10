@@ -25,11 +25,39 @@ var _preview_socket := PacketPeerUDP.new()
 var _pending_replies: Dictionary = {}     # command name -> Array[Callable]
 var _preview_parts: Dictionary = {}       # frame id -> {index: bytes}
 var _launch_attempted := false
+var _launches := 0
+var _relaunch_at := 0.0
+var _quitting := false
+
+const MAX_LAUNCHES := 3
+const RELAUNCH_DELAY_S := 4.0
 
 
 func _ready() -> void:
 	_open_sockets()
 	Settings.changed.connect(_on_setting_changed)
+	# Closing the window must take the tracker down with it, or the next
+	# start finds the camera and the ports still held by a process nobody
+	# can see.  So the quit is handled here rather than accepted outright.
+	get_tree().auto_accept_quit = false
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and not _quitting:
+		_quitting = true
+		_shut_down_and_quit()
+
+
+func _shut_down_and_quit() -> void:
+	if tracker_pid > 0 and OS.is_process_running(tracker_pid):
+		send_command({"cmd": "quit"})
+		var waited := 0.0
+		while OS.is_process_running(tracker_pid) and waited < 1.5:
+			await get_tree().create_timer(0.1).timeout
+			waited += 0.1
+		if OS.is_process_running(tracker_pid):
+			OS.kill(tracker_pid)
+	get_tree().quit()
 
 
 func _open_sockets() -> void:
@@ -60,6 +88,18 @@ func _process(_delta: float) -> void:
 	if not connected and not _launch_attempted and Time.get_ticks_msec() > 1500:
 		_launch_attempted = true
 		_maybe_launch_tracker()
+	# A tracker we started that has exited without ever connecting (or after
+	# losing the connection) is started again a few times, with its log
+	# available for anyone wondering why.
+	if tracker_pid > 0 and not connected and not OS.is_process_running(tracker_pid):
+		if _relaunch_at == 0.0:
+			_relaunch_at = now + RELAUNCH_DELAY_S
+			push_warning("The tracker exited: " + log_tail(3))
+		elif now >= _relaunch_at:
+			_relaunch_at = 0.0
+			tracker_pid = -1
+			if _launches < MAX_LAUNCHES:
+				_maybe_launch_tracker()
 
 
 func _poll_state() -> void:
@@ -147,11 +187,42 @@ func _maybe_launch_tracker() -> void:
 		push_warning("Tracker not found next to the game; start it by hand (see README).")
 		return
 	var args := command.slice(1)
+	_launches += 1
 	tracker_pid = OS.create_process(command[0], args, false)
 	if tracker_pid > 0:
 		print("Started tracker (pid %d): %s" % [tracker_pid, " ".join(command)])
 	else:
 		push_warning("Could not start the tracker: " + " ".join(command))
+
+
+## The last lines of the tracker's log, for showing why it is not answering.
+func log_tail(lines: int = 4) -> String:
+	var path := Paths.tracker_log()
+	if not FileAccess.file_exists(path):
+		return "no tracker log at %s" % path
+	var text := FileAccess.get_file_as_string(path).strip_edges()
+	if text.is_empty():
+		return "the tracker log is empty"
+	var all_lines := text.split("\n")
+	return "\n".join(all_lines.slice(maxi(0, all_lines.size() - lines)))
+
+
+## One line saying whether the tracker is there, and if not, why not.
+func status_text() -> String:
+	if connected:
+		var problems := []
+		if not str(state.get("camera_error", "")).is_empty():
+			problems.append("camera: " + str(state["camera_error"]))
+		return "tracker connected" if problems.is_empty() else "tracker connected, " + ", ".join(problems)
+	if tracker_pid > 0 and not OS.is_process_running(tracker_pid):
+		return "tracker exited (%s) - %s" % [Paths.tracker_log().get_file(), log_tail(1)]
+	if tracker_pid > 0:
+		return "tracker starting..."
+	if not Settings.get_value("tracker.auto_launch", true):
+		return "tracker not connected (auto-launch is off; start it by hand)"
+	if Paths.tracker_command().is_empty():
+		return "tracker not found next to the game"
+	return "tracker not connected"
 
 
 func _exit_tree() -> void:

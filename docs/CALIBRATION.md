@@ -205,6 +205,32 @@ Pads are flat discs with a normal vector.  The default normal `(0, 1, 0)` means 
 downwards.  Edit `normal` in `tracker_config.json` if you want angled pads (for example
 `[0, 0.8, -0.6]` for a pad you strike forwards and down).
 
+## When it does not connect
+
+The line under the camera view always says why.  The usual cases:
+
+* **"tracker exited (tracker.log) - ..."** - the tracker process died.  The line
+  shows the last thing it wrote; the whole story is in `tracker/tracker.log`.
+  The game starts it again a few times by itself.
+* **"CAMERA NOT OPEN: Could not open camera index 0"** - no webcam at that index.
+  Another program has it (PSMoveService, a browser tab, OBS), the PS3 Eye is
+  on a libusb driver rather than a webcam driver, or it is a different index.
+  The tracker keeps retrying every few seconds, so fix the cause and wait.
+* **"controllers over Bluetooth: 0 of 2 connected; no PS Move found"** - the
+  controller is not connected to Windows.  Press its PS button; the light on
+  the controller comes on while Bluetooth connects.  Pair first if it never
+  does (psmove pair, PSMoveService).
+* **"found 2 but could not open one: Access denied"** - another program holds
+  the controller.  Close PSMoveService and its config tool.
+* **"HID entries but none is the '&col01#' collection"** - Windows lists each
+  controller three times and only the first entry talks; the tracker picks
+  that one, so this only shows if the driver exposes something unusual.
+
+A tracker left over from an earlier run (the game closed before it did) used
+to block the next start with "port in use".  The new tracker now asks the old
+one to quit and takes the port over, and the game stops the tracker it
+started when its window closes.
+
 ## Accuracy notes
 
 The numbers below are measured, not guessed:

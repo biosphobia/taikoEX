@@ -44,6 +44,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # A mode counts as delivered when it measures at least this share of
         # the requested rate.
         "fast_mode_min_ratio": 0.9,
+        "retry_s": 3.0,           # how often to retry a camera that would not open
         "flip_horizontal": False,
         "flip_vertical": False,
         "rotate_degrees": 0,      # 0, 90, 180 or 270
@@ -208,6 +209,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,              # light the spheres and read the IMU over Bluetooth HID
         "led_brightness": 1.0,        # 0..1, lower if the camera blows out the colour
         "reconnect_interval_s": 3.0,
+        # HID report that sets the sphere colour.  6 is what psmoveapi uses
+        # and works for both controller models; older documentation says 2.
+        "led_report_id": 6,
     },
     "imu": {
         # Orientation from the controller's accelerometer + gyroscope.

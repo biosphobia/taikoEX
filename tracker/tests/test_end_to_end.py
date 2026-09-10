@@ -269,6 +269,10 @@ def test_reset_config_keeps_the_controllers_and_pads():
         assert [c["id"] for c in reply["config"]["controllers"]] == [0, 1]
         assert [p["id"] for p in reply["config"]["pads"]] == ["don", "ka"]
         assert sorted(tracker.controllers) == [0, 1]
+        # The defaults name a real camera, which this machine may not have;
+        # point the reset tracker back at the simulator and check it tracks.
+        tracker.handle_command({"cmd": "set_config", "patch": {"camera": {"backend": "simulated", "fps": 120},
+                                                               "simulation": {"virtual_clock": True}}})
         run_frames(tracker, 5)
         state = tracker.build_state(now(tracker), [])
         assert len(state["controllers"]) == 2
@@ -282,3 +286,28 @@ def test_empty_controller_list_in_a_saved_config_falls_back_to_defaults():
     config = Config({"controllers": [], "pads": []})
     assert [c["id"] for c in config["controllers"]] == [0, 1]
     assert [p["id"] for p in config["pads"]] == ["don", "ka"]
+
+
+def test_a_camera_that_will_not_open_still_reports_why():
+    """The tracker stays up without a camera, tells the game what went wrong
+    and comes back as soon as a camera setting that works arrives."""
+    from taiko_tracker.config import Config
+    from taiko_tracker.tracker import Tracker
+
+    config = Config({"camera": {"backend": "video", "video_path": "/nowhere/nothing.mp4"},
+                     "network": {"state_port": 47940, "command_port": 47941, "preview_port": 47942, "preview_enabled": False},
+                     "hid": {"enabled": False}, "debug": {"print_hits": False}})
+    tracker = Tracker(config)
+    try:
+        assert tracker.camera is None and "nothing.mp4" in tracker.camera_error
+        for _ in range(3):
+            tracker.step()          # must not raise
+        state = tracker.build_state(time.time(), [])
+        assert "nothing.mp4" in state["camera_error"]
+        assert state["hid_status"]
+        reply = tracker.handle_command({"cmd": "set_config", "patch": {"camera": {"backend": "simulated"}}})
+        assert reply["ok"], reply
+        assert tracker.camera is not None and tracker.camera_error == ""
+        tracker.step()
+    finally:
+        tracker.close()
