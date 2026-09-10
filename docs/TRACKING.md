@@ -137,7 +137,9 @@ sigma along the ray = |d(distance)/d(radius)| × radius noise
 Depth gets averaged hard, the sideways axes are left almost untouched, and
 because the ellipsoid is expressed in world coordinates through the calibration,
 a camera up on a shelf automatically puts its blurry axis where it really
-points.  Two guards sit on top: a measurement far outside the prediction is
+points.  Averaging a noisy axis normally costs responsiveness, but here the
+controller's accelerometer supplies the prediction between frames, so the filter
+follows a stroke instead of smoothing the bottom off it.  Two guards sit on top: a measurement far outside the prediction is
 skipped rather than followed (a hand crossing in front makes a sphere look half
 the size and so twice as far away), and a radius that changes faster than the
 hand could possibly move marks the distance as unusable for that frame while
