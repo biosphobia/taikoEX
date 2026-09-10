@@ -8,6 +8,11 @@ The virtual drums can drive osu!taiko - or any program that reads the keyboard.
    right rim `K`.  Change the keys on that screen or in `tracker_config.json` under
    `osu.keys`.  Key names are single characters or `space enter tab escape f1..f12
    left right up down shift ctrl alt`.
+
+   The four keys are named `<side>_<kind>`, and with the default single drum the
+   side comes from the hand that struck it: hitting the face with your left hand
+   types `F`, with your right hand `J`.  So one drum still gives you all four
+   osu!taiko inputs.
 3. Alt-tab to osu!.  The game window can stay open in the background or you can close it
    and run the tracker alone: `taiko_tracker.exe --osu` (or
    `python run_tracker.py --osu`).

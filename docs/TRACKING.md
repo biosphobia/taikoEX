@@ -163,9 +163,13 @@ the three readings around it, and it only counts if the same sensor saw the hand
 drive at the pad first.  The camera still decides which pad, which is a sideways
 question it answers well.
 
-**From the motion** (`hits.mode: "stroke"`, used when there is no IMU).  The hit
-is where the speed towards the pad falls through zero, interpolated between
-frames.  It needs no absolute accuracy in the depth, only the turn-around.
+**From the motion** (used when there is no IMU, and as a fallback when a stroke
+stops too gently to produce a clear spike).  The hit is where the speed towards
+the pad falls through zero, interpolated between frames.  It needs no absolute
+accuracy in the depth, only the turn-around - plus proof that the hand really
+came down to get there, which is what stops the dip on the way from one pad to
+the next counting as a tiny stroke.  Whichever method fires first disarms the
+pad, so the two can never double-count one swing.
 
 There is also `hits.mode: "plane"`, which fires when the sphere crosses the pad
 surface going down.  It is the sharpest of the three and the least forgiving,
