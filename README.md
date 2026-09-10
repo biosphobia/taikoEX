@@ -46,7 +46,11 @@ Then open the `game/` folder in Godot 4.5 and press Play, or run
 automatically when no tracker answers.
 
 No hardware at hand?  `python tracker/run_tracker.py --backend simulated --no-hid`
-starts a fake camera with two fake controllers so the whole game can be exercised.
+starts a fake camera with two fake controllers, and the whole game works against
+it.  Pick which room it renders with `simulation.scene` in the tracker config:
+`clean`, `living_room`, `far_shelf`, `floor_low` or `sunny`, each with its own
+lamps, screens, sunlight, sensor noise, motion blur and an arm that sweeps
+across the spheres.
 
 ## Hardware
 
