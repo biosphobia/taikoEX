@@ -1,0 +1,36 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; but you can also edit it by hand if you know what you are doing.
+
+config_version=5
+
+[application]
+
+config/name="TaikoEX"
+config/description="Taiko drum game played with PS Move controllers tracked by a PS3 Eye camera."
+run/main_scene="res://scenes/main_menu.tscn"
+config/features=PackedStringArray("4.5", "GL Compatibility")
+config/icon="res://icon.svg"
+run/delta_smoothing=false
+
+[autoload]
+
+Paths="*res://autoload/paths.gd"
+Settings="*res://autoload/settings.gd"
+GameSkin="*res://autoload/skin.gd"
+TrackerClient="*res://autoload/tracker_client.gd"
+InputRouter="*res://autoload/input_router.gd"
+Updater="*res://autoload/updater.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true

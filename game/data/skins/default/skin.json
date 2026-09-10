@@ -1,0 +1,37 @@
+{
+  "_comment": "Colours are HTML hex. Sizes are pixels at 1280x720. Drop PNG files named don.png, ka.png, don_big.png, ka_big.png, roll_head.png, roll_body.png, balloon.png, lane.png, background.png or drum.png in this folder to replace the built-in drawings.",
+  "colors": {
+    "background": "#1c1c22",
+    "lane": "#2f2f36",
+    "lane_border": "#111114",
+    "judge_circle": "#4a4a55",
+    "judge_circle_outline": "#d0d0d8",
+    "don": "#f04e2c",
+    "ka": "#2cb9e8",
+    "note_outline": "#ffffff",
+    "note_inner": "#ffe4c8",
+    "roll": "#f2c94c",
+    "balloon": "#f78c1e",
+    "barline": "#8a8a96",
+    "text": "#f4f4f8",
+    "text_dim": "#a0a0aa",
+    "good": "#ffd54a",
+    "ok": "#e6e6ec",
+    "bad": "#4f8cff",
+    "gauge": "#f5b53a",
+    "gauge_clear": "#ff4a6d",
+    "gogo": "#ff9a3c",
+    "drum_face": "#efe4cf",
+    "drum_rim": "#7d4a2b",
+    "hit_left": "#f04e2c",
+    "hit_right": "#2cb9e8"
+  },
+  "sizes": {
+    "note_radius": 34,
+    "big_note_radius": 48,
+    "lane_height": 110,
+    "judge_x": 260,
+    "measure_width": 700,
+    "lane_y": 200
+  }
+}

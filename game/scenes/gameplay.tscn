@@ -1,0 +1,91 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/gameplay/gameplay.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/gameplay/lane.gd" id="2"]
+[ext_resource type="Script" path="res://scripts/gameplay/drum_visual.gd" id="3"]
+
+[node name="Gameplay" type="Control"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1")
+
+[node name="Lane" type="Control" parent="."]
+anchor_right = 1.0
+offset_top = 200.0
+offset_bottom = 310.0
+script = ExtResource("2")
+
+[node name="Drum" type="Control" parent="."]
+offset_left = 40.0
+offset_top = 380.0
+offset_right = 240.0
+offset_bottom = 580.0
+script = ExtResource("3")
+
+[node name="Music" type="AudioStreamPlayer" parent="."]
+
+[node name="SfxDon" type="AudioStreamPlayer" parent="."]
+max_polyphony = 8
+
+[node name="SfxKa" type="AudioStreamPlayer" parent="."]
+max_polyphony = 8
+
+[node name="SfxPop" type="AudioStreamPlayer" parent="."]
+
+[node name="Hud" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+
+[node name="Title" type="Label" parent="Hud"]
+offset_left = 40.0
+offset_top = 30.0
+offset_right = 800.0
+offset_bottom = 70.0
+theme_override_font_sizes/font_size = 28
+
+[node name="Score" type="Label" parent="Hud"]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -340.0
+offset_top = 30.0
+offset_right = -40.0
+offset_bottom = 70.0
+theme_override_font_sizes/font_size = 32
+horizontal_alignment = 2
+
+[node name="Gauge" type="ProgressBar" parent="Hud"]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -440.0
+offset_top = 80.0
+offset_right = -40.0
+offset_bottom = 104.0
+show_percentage = false
+
+[node name="Combo" type="Label" parent="Hud"]
+offset_left = 200.0
+offset_top = 320.0
+offset_right = 320.0
+offset_bottom = 380.0
+theme_override_font_sizes/font_size = 44
+horizontal_alignment = 1
+
+[node name="Popup" type="Label" parent="Hud"]
+offset_left = 180.0
+offset_top = 150.0
+offset_right = 340.0
+offset_bottom = 190.0
+theme_override_font_sizes/font_size = 30
+horizontal_alignment = 1
+
+[node name="Debug" type="Label" parent="Hud"]
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = -40.0
+offset_right = 800.0
+offset_bottom = -10.0
+theme_override_font_sizes/font_size = 14

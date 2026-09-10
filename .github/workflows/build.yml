@@ -1,0 +1,122 @@
+# Builds TaikoEX for Windows on every push to the main branch and publishes
+# it as a GitHub release.  The game checks these releases at start-up and
+# updates itself (see game/autoload/updater.gd).
+#
+# Version tags look like  v0.1.0-build.42  where 0.1.0 comes from the VERSION
+# file and 42 is the workflow run number.
+
+name: Build and release
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.5"
+  GODOT_STATUS: "stable"
+
+jobs:
+  test:
+    name: Tests (tracker + game smoke test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tracker dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libhidapi-hidraw0 libhidapi-libusb0
+          pip install -r tracker/requirements.txt
+
+      - name: Tracker unit tests
+        run: cd tracker && python -m pytest -q
+
+      - name: Download Godot
+        run: |
+          curl -sSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64.zip"
+          unzip -q godot.zip
+          mv Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64 godot
+
+      - name: Game smoke test
+        run: |
+          ./godot --headless --path game --import || true
+          ./godot --headless --path game res://tests/smoke.tscn
+
+  build-windows:
+    name: Windows build + release
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        shell: bash
+        run: |
+          BASE=$(cat VERSION | tr -d '[:space:]')
+          echo "tag=v${BASE}-build.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Download Godot and export templates
+        shell: pwsh
+        run: |
+          $v = "${env:GODOT_VERSION}-${env:GODOT_STATUS}"
+          Invoke-WebRequest "https://github.com/godotengine/godot/releases/download/$v/Godot_v${v}_win64.exe.zip" -OutFile godot.zip
+          Expand-Archive godot.zip -DestinationPath godot
+          Invoke-WebRequest "https://github.com/godotengine/godot/releases/download/$v/Godot_v${v}_export_templates.tpz" -OutFile templates.tpz
+          $dest = "$env:APPDATA\Godot\export_templates\${env:GODOT_VERSION}.${env:GODOT_STATUS}"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive templates.tpz -DestinationPath templates_tmp
+          Move-Item templates_tmp\templates\* $dest
+
+      - name: Export the game
+        shell: pwsh
+        run: |
+          Set-Content -Path game\version.txt -Value "${{ steps.version.outputs.tag }}"
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          $godot = (Get-ChildItem godot -Filter "*console.exe" | Select-Object -First 1).FullName
+          & $godot --headless --path game --import
+          & $godot --headless --path game --export-release "Windows Desktop" ../build/TaikoEX.exe
+          if (-not (Test-Path build\TaikoEX.exe)) { throw "export failed" }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the tracker executable
+        shell: pwsh
+        run: |
+          pip install -r tracker/requirements.txt pyinstaller
+          pyinstaller --noconfirm --onedir --name taiko_tracker --collect-all hid --collect-all cv2 --distpath build/tracker_dist --workpath build/pyi --specpath build/pyi tracker/run_tracker.py
+          Move-Item build/tracker_dist/taiko_tracker build/tracker
+
+      - name: Assemble the release folder
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse game\data build\data
+          Remove-Item -Force build\data\.gdignore -ErrorAction SilentlyContinue
+          Remove-Item -Force build\data\settings.json -ErrorAction SilentlyContinue
+          Copy-Item README.md build\README.md
+          Copy-Item -Recurse docs build\docs
+          Set-Content -Path build\VERSION.txt -Value "${{ steps.version.outputs.tag }}"
+          Remove-Item -Recurse -Force build\pyi, build\tracker_dist -ErrorAction SilentlyContinue
+          Compress-Archive -Path build\* -DestinationPath TaikoEX-windows-x64.zip
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: TaikoEX ${{ steps.version.outputs.tag }}
+          body: |
+            Automated build of commit ${{ github.sha }}.
+
+            Unzip anywhere and run `TaikoEX.exe`.  Installed copies update to this build automatically.
+          files: TaikoEX-windows-x64.zip
