@@ -187,35 +187,60 @@ correctly.
 
 `python tools/evaluate_tracking.py` scores the whole pipeline against the truth
 in five simulated rooms, each with its own lamps, screens, sunlight, sensor
-noise and an arm that sweeps across the spheres.  Representative numbers on a
-640×480 camera at 60 fps:
+noise and an arm that sweeps across the spheres.  It runs on the simulator's
+own clock, so the numbers are the same on any machine.  At 640×480 and 60 fps:
 
 | room | camera | position error | strokes | wrong pad | timing spread |
 | --- | --- | --- | --- | --- | --- |
-| clean | 1.4 m in front | 22 mm | 24/24 | 0 | ±10 ms |
-| living room | 1.6 m, lamp + poster + a face | 68 mm | 23/24 | 0 | ±10 ms |
+| clean | 1.4 m in front | 22 mm | 24/24 | 0 | ±6 ms |
+| living room | 1.6 m, lamp + poster + a face | 56 mm | 23/24 | 0 | ±6 ms |
 | sunny | 1.7 m, window glare, waving arm | 40 mm | 24/24 | 0 | ±8 ms |
-| floor | 1.2 m, on the floor looking up | 299 mm | 18/24 | 0 | ±7 ms |
-| far shelf | 3.3 m, high and 35° to the side | 920 mm | 19/24 | 3 | ±11 ms |
+| floor | 1.2 m, on the floor looking up | 297 mm | 18/24 | 1 | ±8 ms |
+| far shelf | 3.3 m, high and 35° to the side | 860 mm | 17/24 | 0 | ±9 ms |
 
-Three things are worth drawing out.
+And in the PS3 Eye's fastest mode, 320×240 at 187 fps (**Fastest mode** in the
+Camera tab), with the calibration done at that resolution:
+
+| room | camera | position error | strokes | wrong pad | timing spread |
+| --- | --- | --- | --- | --- | --- |
+| clean | 1.4 m in front | 58 mm | 24/24 | 0 | ±2 ms |
+| living room | 1.6 m, lamp + poster + a face | 67 mm | 23/24 | 0 | ±4 ms |
+| sunny | 1.7 m, window glare, waving arm | 52 mm | 23/24 | 0 | ±1 ms |
+| floor | 1.2 m, on the floor looking up | 96 mm | 23/24 | 0 | ±2 ms |
+| far shelf | 3.3 m, high and 35° to the side | unusable | 9/24 | 5 | - |
+
+Four things are worth drawing out.
 
 Timing holds up even where the position does not.  On the floor the camera is
 staring straight along the direction the hands move, so its idea of where they
-are is thirty centimetres out - and the strokes are still timed to within seven
+are is thirty centimetres out - and the strokes are still timed to within eight
 milliseconds, because that number comes from the accelerometer.
 
+The fast mode buys timing and motion, and pays in depth.  With three times the
+frames the position filter follows a stroke instead of smoothing the bottom off
+it - which is why the floor room, the one that depends most on following the
+hand, goes from 18 strokes to 23 and from thirty centimetres to ten - and the
+timing spread drops to a couple of milliseconds.  The cost is a picture half
+the size: a sphere 1.5 m away is four pixels across instead of eight, so the
+depth of a hand held still is noisier.  Within two metres the position filter
+averages that away and don and ka come out right; at 3.3 m the sphere is two
+pixels across and nothing can be made of it.  **In the fast mode, keep the
+camera within about two metres.**
+
 Don and ka are told apart reliably wherever the camera is close enough to see
-the spheres properly: no mistakes at all in the four rooms within two metres,
+the spheres properly: at most one mistake in the four rooms within two metres,
 because that decision is a sideways measurement across a target twenty
-centimetres wide.  All three errors are in the far-shelf room, where the camera
-is 3.3 m away and its idea of where the hands are is most of a metre out.
+centimetres wide.  The errors are in the far-shelf room, where the camera is
+3.3 m away and its idea of where the hands are is most of a metre out.
 
 Position error grows sharply with distance.  At 3.3 m the spheres are under four
-pixels across and no amount of filtering fixes that.  **Put the camera between
-one and two metres away**, and use the narrow lens setting (the red dot on the
-lens ring) - it is the single biggest thing you can do for accuracy.
+pixels across even at 640×480 and no amount of filtering fixes that.  **Put the
+camera between one and two metres away**, and use the narrow lens setting (the
+red dot on the lens ring) - it is the single biggest thing you can do for
+accuracy.
 
-Run it yourself with `python tools/evaluate_tracking.py`, and watch it with
+Run it yourself with `python tools/evaluate_tracking.py` (add
+`--set camera.width=320 --set camera.height=240 --set camera.fps=187` for the
+fast mode), and watch it with
 `python tools/record_setups.py --godot <path to godot>`, which records the 3D
-view in each room.
+view in each room (`--fast` for the fast mode).

@@ -71,6 +71,23 @@ colour and read the buttons / accelerometer.  Both the PS3 (CECH-ZCM1) and the P
 you can switch `hid.enabled` off in the tracker config and tracking still works from the
 colour alone.
 
+**Close PSMoveService once the controllers are paired.**  It is a fine pairing tool, but
+while it (or its config tool) is running it holds the controllers *and* the camera, and
+nothing else can open them: the calibration screen then says the camera could not be
+opened and the controllers stay "0 of 2 connected".  Pair, connect (press the PS button
+until the light comes on), quit PSMoveService, start the game.
+
+**If the PS3 Eye stopped being a webcam** - PSMoveService's setup replaces the camera's
+driver with a libusb/WinUSB one, after which Windows no longer lists it as a camera and
+the `opencv` backend cannot open it.  Either put the webcam driver back (Device Manager,
+or Zadig's *reinstall driver*), or use the `pseye` backend with pseyepy installed.
+
+**When something is wrong, read `tracker\tracker.log`.**  The tracker writes everything
+it prints there.  The calibration screen shows its last lines whenever the tracker is not
+answering, and the status line under the camera view spells out the camera error and the
+Bluetooth situation ("found 2 but could not open one: Access denied - is PSMoveService
+still holding it?").
+
 ## How it works
 
 ```

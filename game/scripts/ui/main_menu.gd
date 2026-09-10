@@ -45,7 +45,9 @@ func _ready() -> void:
 
 
 func _refresh_status() -> void:
-	var tracker := "tracker connected" if TrackerClient.connected else "tracker not connected (keyboard: D F J K)"
+	var tracker := TrackerClient.status_text()
+	if not TrackerClient.connected:
+		tracker += " (keyboard: D F J K)"
 	status_label.text = "Version %s   |   %s   |   %s" % [Paths.version(), tracker, Updater.status_text]
 
 

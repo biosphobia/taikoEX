@@ -42,21 +42,43 @@ class StateSender:
 class CommandReceiver:
     """The tracker's command port.
 
-    Deliberately *not* set to reuse the address: if another tracker is already
-    running, this must fail loudly.  Two trackers sharing one port would each
-    receive some of the commands, and the calibration would quietly be applied
-    to whichever one happened to get the packet.
+    Deliberately *not* set to reuse the address: two trackers sharing one port
+    would each receive some of the commands, and the calibration would quietly
+    be applied to whichever one happened to get the packet.  If the port is
+    taken, the holder is almost always a tracker left over from the last run
+    (the game closed before it did), so it is asked to quit and the port is
+    retried for a few seconds before giving up.
     """
 
-    def __init__(self, port: int, host: str = "0.0.0.0"):
+    def __init__(self, port: int, host: str = "0.0.0.0", takeover_s: float = 4.0):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            self.sock.bind((host, int(port)))
-        except OSError as exc:
-            raise RuntimeError(
-                f"Port {port} is already in use - another tracker is probably running. "
-                f"Stop it, or set network.command_port to something else.") from exc
+        deadline = time.time() + takeover_s
+        asked = False
+        while True:
+            try:
+                self.sock.bind((host, int(port)))
+                break
+            except OSError as exc:
+                if time.time() >= deadline:
+                    raise RuntimeError(
+                        f"Port {port} is already in use and its owner did not quit - another tracker "
+                        f"(or another program) is holding it. Stop it, or set network.command_port "
+                        f"to something else.") from exc
+                if not asked:
+                    print(f"[network] port {port} is busy - asking the tracker holding it to quit")
+                    self.ask_to_quit(port)
+                    asked = True
+                time.sleep(0.25)
         self.sock.setblocking(False)
+
+    @staticmethod
+    def ask_to_quit(port: int) -> None:
+        """Send the quit command to whatever tracker owns ``port``."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.sendto(json.dumps({"cmd": "quit"}).encode("utf-8"), ("127.0.0.1", int(port)))
+        except OSError:
+            pass
 
     def poll(self) -> list[tuple[dict, tuple]]:
         messages = []

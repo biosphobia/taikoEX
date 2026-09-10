@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import sys
 import time
+import traceback
+from collections import deque
 from pathlib import Path
 
 import numpy as np
 
 from . import __version__
 from .background import BackgroundLearner
-from .camera import apply_orientation, open_camera
-from .config import DEFAULT_CONFIG, Config
+from .camera import apply_orientation, choose_fastest, open_camera, probe_modes
+from .config import DEFAULT_CONFIG, LED_PRESETS, Config
 from .geometry import PinholeModel, WorldCalibration, WorldTransform, solve_focal_and_offset
 from .imu import OrientationFilter, quat_rotate
 from .keysender import KeySender
@@ -43,6 +45,7 @@ class TrackedController:
         self.orientation = OrientationFilter(imu_cfg)
         self.last_seen = 0.0
         self.last_radius = 0.0
+        self.recent_radii: deque[float] = deque(maxlen=60)   # for the distance calibration
         self.size_trusted = True
         self.untrusted_frames = 0
         self.last_imu_time = 0.0
@@ -53,6 +56,10 @@ class TrackedController:
         """Fold one camera measurement into the filter."""
         self.visible = True
         self.pixel = (det.x, det.y, det.radius)
+        if det.completeness >= 0.85:
+            # Only a whole sphere says anything about the distance; one with a
+            # hand or a drum edge bitten out of it is left out of the average.
+            self.recent_radii.append(float(det.radius))
         self.camera_pos = camera_pos
         self.raw_world_pos = raw_world
         gap = now - self.last_seen
@@ -65,8 +72,29 @@ class TrackedController:
         self.velocity = self.kalman.velocity.copy()
         self.last_seen = now
 
+    def steady_radius(self, tolerance: float = 0.1) -> float:
+        """The sphere's radius averaged over the frames it has been held still.
+
+        One frame's radius jitters by a fraction of a pixel, which on a sphere
+        a few pixels across is several centimetres of distance.  The distance
+        calibration is done with the controller held still, so take the median
+        of the recent readings that agree with the latest one (within
+        ``tolerance``); anything older belongs to wherever the hand was before.
+        """
+        radii = list(self.recent_radii)
+        if not radii:
+            raise RuntimeError("the sphere is partly hidden - move so the camera sees all of it, then try again")
+        latest = radii[-1]
+        steady = []
+        for radius in reversed(radii):
+            if abs(radius - latest) > tolerance * latest + 0.5:
+                break
+            steady.append(radius)
+        return float(np.median(steady))
+
     def lost(self) -> None:
         self.visible = False
+        self.recent_radii.clear()     # a radius from before the sphere was lost says nothing about now
 
     def update_orientation(self, accel_g, gyro_rad_s, now: float) -> None:
         dt = now - self.last_imu_time if self.last_imu_time > 0 else 1.0 / 60.0
@@ -86,6 +114,7 @@ class Tracker:
         self.config = config
         self.running = True
         self.camera = None
+        self.camera_mode: dict = {}
         self.frame_size = (int(config["camera"]["width"]), int(config["camera"]["height"]))
         self.detector = SphereDetector(config)
         self.model = PinholeModel(config["optics"], *self.frame_size)
@@ -112,30 +141,60 @@ class Tracker:
         self.recent_hits: list[dict] = []   # last few hits, for the game UI
         self.pads_revision = 0              # bumped whenever the pad layout changes
         self.distance_samples: list[tuple[float, float]] = []   # (radius_px, distance_m)
-        self.open_camera()
+        self.camera_error = ""              # why the camera is not open, for the game to show
+        self._camera_retry_at = 0.0
+        self.try_open_camera()
 
     # ------------------------------------------------------------------
+    def try_open_camera(self) -> bool:
+        """Open the camera, or remember why it could not be opened.
+
+        A camera that will not open is not the end of the tracker: the game
+        still gets state packets carrying the error, so "not connected"
+        comes with a reason (a driver that is not installed, another program
+        holding the device, the wrong index), and the tracker keeps trying
+        every few seconds.
+        """
+        try:
+            self.open_camera()
+        except Exception as exc:
+            self.camera = None
+            self.camera_error = str(exc)
+            self._camera_retry_at = time.time() + float(self.config["camera"].get("retry_s", 3.0))
+            print(f"[camera] could not open: {exc}")
+            return False
+        self.camera_error = ""
+        return True
+
     def open_camera(self) -> None:
         if self.camera is not None:
             self.camera.close()
+            self.camera = None
         self.camera = open_camera(self.config)
-        self.frame_size = (int(self.config["camera"]["width"]), int(self.config["camera"]["height"]))
+        self.camera_mode = self.camera.mode()
+        new_size = (int(self.camera_mode["width"]), int(self.camera_mode["height"]))
+        if new_size != self.frame_size:
+            # Distance samples are radii in the old frame's pixels; they
+            # cannot be mixed with samples taken at the new size.
+            self.distance_samples = []
+        self.frame_size = new_size
         self.model = PinholeModel(self.config["optics"], *self.frame_size)
         self.detector.invalidate()
-        print(f"[camera] opened '{self.camera.name}' backend")
+        mode = self.camera_mode
+        print(f"[camera] opened '{self.camera.name}' backend at {mode['width']}x{mode['height']}, "
+              f"{mode['fps']} fps (asked for {self.config['camera']['width']}x{self.config['camera']['height']}, "
+              f"{self.config['camera']['fps']} fps)")
 
     def apply_config_changes(self, patch: dict) -> None:
         """Push a partial config into the live objects."""
         self.config.apply_patch(patch)
         if "camera" in patch:
-            try:
-                self.open_camera()
-            except Exception as exc:
-                print(f"[camera] reopen failed: {exc}")
+            self.try_open_camera()
         if "processing" in patch:
             self.detector.invalidate()
         if "optics" in patch:
             self.model = PinholeModel(self.config["optics"], *self.frame_size)
+            self.detector.invalidate()      # the reference width may have changed
         if "world" in patch:
             self.world = WorldTransform(self.config["world"])
         if "pads" in patch or "hits" in patch:
@@ -291,6 +350,7 @@ class Tracker:
                 "vel": [round(float(v), 3) for v in tracked.velocity],
                 "quat": tracked.orientation.as_list(),
                 "imu": bool(tracked.orientation.initialised),
+                "led": [int(v) for v in tracked.cfg.get("led", [255, 255, 255])],
                 "hid": move is not None and move.connected,
             }
             if move is not None:
@@ -302,7 +362,9 @@ class Tracker:
         state = {
             "type": "state",
             "t": round(timestamp, 4),
-            "fps": round(self.fps, 1),
+            "fps": round(self.fps, 1),                       # measured by the tracker
+            "fps_requested": int(self.config["camera"]["fps"]),
+            "fps_camera": self.camera_mode.get("fps", 0),     # what the driver claims
             "frame": list(self.frame_size),
             "controllers": controllers,
             "hits": [self.hit_to_dict(h) for h in new_hits],
@@ -312,6 +374,8 @@ class Tracker:
             "pads_revision": self.pads_revision,
             "osu": bool(self.config["osu"]["enabled"]),
             "hid_available": self.moves.available,
+            "hid_status": self.moves.status,
+            "camera_error": self.camera_error,
             "learning_background": self.background.active,
         }
         return state
@@ -352,12 +416,24 @@ class Tracker:
         return {"path": str(self.config.path)}
 
     def cmd_reset_config(self, msg):
+        """Back to DEFAULT_CONFIG, with every live object rebuilt from it."""
         self.config = Config({}, self.config.path)
         self.detector.config = self.config
         self.moves.config = self.config
-        self.apply_config_changes({"camera": {}, "processing": {}, "optics": {}, "world": {}, "pads": [], "controllers": []})
-        self.apply_config_changes({"pads": DEFAULT_CONFIG["pads"]})
+        self.background.config = self.config
+        self.reapply_config()
         return {"config": self.config.data}
+
+    def reapply_config(self) -> None:
+        """Rebuild everything that caches part of the config, from the config as it is now."""
+        self.try_open_camera()
+        self.detector.invalidate()
+        self.model = PinholeModel(self.config["optics"], *self.frame_size)
+        self.world = WorldTransform(self.config["world"])
+        self.reload_pads()
+        self.controllers = {int(c["id"]): TrackedController(c, self.config["fusion"], self.config["imu"])
+                            for c in self.config["controllers"]}
+        self.keys.hold_s = float(self.config["osu"]["key_hold_ms"]) / 1000.0
 
     def cmd_quit(self, msg):
         self.running = False
@@ -384,6 +460,40 @@ class Tracker:
             cap.release()
         return {"cameras": found}
 
+    def cmd_probe_camera_modes(self, msg):
+        """Try every mode in camera.fast_modes and report what each delivers.
+
+        The live camera is closed while the modes are measured (a device can
+        only be open once) and reopened afterwards.
+        """
+        results = self._probe(msg, stop_when_delivered=False)
+        return {"modes": results}
+
+    def cmd_camera_fastest(self, msg):
+        """Switch to the fastest mode the camera really delivers.
+
+        The modes are tried quickest first and the search stops at the first
+        one that measures at least camera.fast_mode_min_ratio of its request,
+        so with a PS3 Eye on a good driver this takes about a second.
+        """
+        results = self._probe(msg, stop_when_delivered=True)
+        best = choose_fastest(results)
+        if best is None:
+            raise RuntimeError("no camera mode could be opened: " + "; ".join(str(r.get("error", "")) for r in results))
+        self.apply_config_changes({"camera": {"width": best["width"], "height": best["height"],
+                                              "fps": best["fps_requested"]}})
+        return {"chosen": best, "modes": results, "mode": self.camera_mode}
+
+    def _probe(self, msg: dict, stop_when_delivered: bool) -> list[dict]:
+        if self.camera is not None:
+            self.camera.close()
+            self.camera = None
+        try:
+            return probe_modes(self.config, modes=msg.get("modes"), seconds=float(msg.get("seconds", 0.5)),
+                               stop_when_delivered=stop_when_delivered, between=self.moves.update)
+        finally:
+            self.open_camera()
+
     def cmd_set_preview(self, msg):
         net = self.config["network"]
         for key in ("preview_enabled", "preview_fps", "preview_width", "preview_quality"):
@@ -407,13 +517,17 @@ class Tracker:
         controller["hsv_min"], controller["hsv_max"] = hsv_min, hsv_max
         return {"hsv_min": hsv_min, "hsv_max": hsv_max}
 
+    def cmd_led_presets(self, msg):
+        """Sphere colours that track well, each with its HSV range."""
+        return {"presets": LED_PRESETS}
+
     def cmd_set_led(self, msg):
         controller = self._controller_cfg(int(msg.get("controller", 0)))
         controller["led"] = [int(v) for v in msg["rgb"]]
         return {"led": controller["led"]}
 
     def cmd_list_controllers(self, msg):
-        return {"devices": self.moves.list_devices(),
+        return {"devices": self.moves.list_devices(), "status": self.moves.status,
                 "connected": {slot: c.serial for slot, c in self.moves.controllers.items()}}
 
     # -- calibration ---------------------------------------------------
@@ -428,11 +542,13 @@ class Tracker:
         tracked = self._tracked(int(msg.get("controller", 0)))
         distance = float(msg["distance_m"])
         self.distance_samples = [s for s in self.distance_samples if abs(s[1] - distance) > 0.05]
-        self.distance_samples.append((float(tracked.pixel[2]), distance))
+        self.distance_samples.append((tracked.steady_radius(), distance))
         result = {"samples": [[round(r, 2), round(d, 3)] for r, d in self.distance_samples]}
         if len(self.distance_samples) >= 2:
+            # Solved in the live frame's pixels (the glow is a per-pixel
+            # effect); only the focal length is stored at the reference width.
             focal, offset = solve_focal_and_offset(self.distance_samples, float(self.config["optics"]["sphere_radius_m"]))
-            self.config["optics"]["focal_px"] = round(focal, 2)
+            self.config["optics"]["focal_px"] = round(self.model.to_reference_px(focal), 2)
             self.config["optics"]["radius_offset_px"] = round(offset, 3)
             self.model = PinholeModel(self.config["optics"], *self.frame_size)
             result.update(focal_px=self.config["optics"]["focal_px"],
@@ -447,7 +563,7 @@ class Tracker:
         tracked = self._tracked(int(msg.get("controller", 0)))
         distance = float(msg["distance_m"])
         focal = self.model.focal_from_known_distance(tracked.pixel[2], distance)
-        self.config["optics"]["focal_px"] = round(focal, 2)
+        self.config["optics"]["focal_px"] = round(self.model.to_reference_px(focal), 2)
         self.model = PinholeModel(self.config["optics"], *self.frame_size)
         return {"focal_px": self.config["optics"]["focal_px"]}
 
@@ -541,7 +657,7 @@ class Tracker:
     def cmd_learn_background(self, msg):
         """Turn the spheres off, see what still looks like a sphere, mask it."""
         self.set_leds(False)
-        frames = self.background.start(msg.get("frames"))
+        frames = self.background.start(msg.get("frames"), fps=float(self.camera_mode.get("fps", 60)))
         return {"frames": frames}
 
     def cmd_clear_background(self, msg):
@@ -692,6 +808,9 @@ class Tracker:
         for msg, addr in self.commands.poll():
             self.commands.reply(addr, self.handle_command(msg))
         self.moves.update()
+        if self.camera is None:
+            self.step_without_camera()
+            return
         ok, frame, timestamp = self.camera.read()
         self.update_controllers_imu(timestamp)
         if not ok or frame is None:
@@ -703,6 +822,15 @@ class Tracker:
         self.tick_fps()
         if self.config["debug"]["show_window"] and not self.show_debug_window():
             self.running = False
+
+    def step_without_camera(self) -> None:
+        """Keep talking to the game and the controllers while the camera is missing."""
+        now = time.time()
+        if now >= self._camera_retry_at and self.try_open_camera():
+            return
+        self.update_controllers_imu(now)
+        self.state_out.send(self.build_state(now, []))
+        time.sleep(1.0 / 30.0)
 
     def run(self) -> None:
         print(f"taiko tracker {__version__} - Ctrl+C to stop")
@@ -738,6 +866,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     config = Config.load(args.config)
+    log_path = config.path.with_name("tracker.log")
+    log = start_logging(log_path)
     if args.backend:
         config["camera"]["backend"] = args.backend
     if args.camera is not None:
@@ -752,8 +882,53 @@ def main(argv=None) -> int:
     if args.no_hid:
         config["hid"]["enabled"] = False
 
-    Tracker(config).run()
+    try:
+        Tracker(config).run()
+    except Exception as exc:
+        # The game shows the last lines of the log when the tracker is not
+        # answering, so the reason must land there before the process ends.
+        print(f"[tracker] fatal: {exc}")
+        traceback.print_exc()
+        if log is not None:
+            log.flush()
+        return 1
     return 0
+
+
+class Tee:
+    """Write everything printed to the console into the log file as well."""
+
+    def __init__(self, console, log_file):
+        self.console = console
+        self.log_file = log_file
+
+    def write(self, text: str) -> None:
+        for stream in (self.console, self.log_file):
+            try:
+                stream.write(text)
+                stream.flush()
+            except Exception:
+                pass
+
+    def flush(self) -> None:
+        for stream in (self.console, self.log_file):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+
+
+def start_logging(path: Path):
+    """Mirror stdout and stderr into ``tracker.log`` next to the config file."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(path, "w", encoding="utf-8", buffering=1)
+    except OSError:
+        return None
+    sys.stdout = Tee(sys.stdout, log_file)
+    sys.stderr = Tee(sys.stderr, log_file)
+    print(f"taiko tracker {__version__} - log at {path}")
+    return log_file
 
 
 if __name__ == "__main__":

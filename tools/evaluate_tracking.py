@@ -19,7 +19,6 @@ import argparse
 import json
 import statistics
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -38,7 +37,11 @@ PAD_PATTERN = ["don", "ka", "don", "ka"]
 def build(scene: str, overrides: dict) -> Tracker:
     data = {
         "camera": {"backend": "simulated", "fps": 60},
-        "simulation": {"scene": scene},
+        # The virtual clock steps time by exactly one frame per read, so the
+        # score does not depend on how busy the machine is - and a 187 fps
+        # run is really 187 frames per simulated second, not whatever the
+        # CPU managed.
+        "simulation": {"scene": scene, "virtual_clock": True},
         "network": {"state_port": 47840, "command_port": 47841, "preview_port": 47842, "preview_enabled": False},
         "hid": {"enabled": False},
         "debug": {"print_hits": False},
@@ -49,8 +52,28 @@ def build(scene: str, overrides: dict) -> Tracker:
     return Tracker(config)
 
 
-def steps(tracker: Tracker, count: int) -> None:
-    for _ in range(count):
+
+
+def settle(tracker: Tracker, seconds: float) -> None:
+    """Run the tracker for a stretch of *camera time*.
+
+    Waits are in seconds rather than frames so that the evaluation asks the
+    same thing of a 187 fps camera as of a 60 fps one: a player holds still
+    for a moment, not for a number of frames.
+    """
+    until = tracker.camera.clock() + seconds
+    while tracker.camera.clock() < until:
+        tracker.step()
+
+
+def wait_visible(tracker: Tracker, controller: int = 0, timeout: float = 3.0) -> None:
+    """Wait for the whole sphere to be seen - a player presses the button when
+    the preview shows it, not while the arm is sweeping across."""
+    until = tracker.camera.clock() + timeout
+    while tracker.camera.clock() < until:
+        tracked = tracker.controllers[controller]
+        if tracked.visible and tracked.recent_radii:
+            return
         tracker.step()
 
 
@@ -66,29 +89,32 @@ def calibrate(tracker: Tracker) -> dict:
     # 1. Learn which parts of the room look like a controller.
     sim.goto(0, [-0.2, 0.25, 0.0])
     sim.goto(1, [0.2, 0.25, 0.0])
-    steps(tracker, 5)
+    settle(tracker, 0.1)
     tracker.handle_command({"cmd": "learn_background"})
     while tracker.background.active:
         tracker.step()
-    steps(tracker, 5)
+    settle(tracker, 0.1)
     # 2. Distance scale, from two distances straight out in front of the lens.
     tracker.handle_command({"cmd": "calibrate_distance_reset"})
     reply = {}
     for distance in (0.7, 1.5):
         point = sim.virtual.position + sim.virtual.rotation_cam_to_world[:, 2] * distance
         sim.goto(0, point.tolist())
-        steps(tracker, 25)
+        settle(tracker, 0.5)
+        wait_visible(tracker)
         reply = tracker.handle_command({"cmd": "calibrate_distance", "controller": 0, "distance_m": distance})
         assert reply.get("ok"), reply
     optics = {"focal_px": reply.get("focal_px"), "radius_offset_px": reply.get("radius_offset_px")}
     # 3. World axes.
     for name, point in (("origin", [0, 0, 0]), ("right", [0.4, 0, 0]), ("forward", [0, 0, -0.4])):
         sim.goto(0, point)
-        steps(tracker, 30)
-        tracker.handle_command({"cmd": "world_capture", "point": name, "controller": 0})
+        settle(tracker, 0.5)
+        wait_visible(tracker)
+        reply = tracker.handle_command({"cmd": "world_capture", "point": name, "controller": 0})
+        assert reply.get("ok"), reply
     sim.goto(0, [-0.2, 0.2, 0.0])
     sim.goto(1, [0.2, 0.2, 0.0])
-    steps(tracker, 20)
+    settle(tracker, 0.35)
     return {"optics": optics, "background": tracker.background_result}
 
 
@@ -103,7 +129,7 @@ def measure_positions(tracker: Tracker, samples: int = 8) -> list[float]:
     for _ in range(samples):
         point = np.array([rng.uniform(-0.35, 0.35), rng.uniform(-0.05, 0.30), rng.uniform(-0.15, 0.15)])
         sim.goto(0, point)
-        steps(tracker, 45)
+        settle(tracker, 0.75)
         tracked = tracker.controllers[0]
         if tracked.visible:
             errors.append(float(np.linalg.norm(tracked.world_pos - point)))
@@ -114,7 +140,8 @@ def measure_hits(tracker: Tracker, strokes: int = 24, interval: float = 0.32) ->
     """Schedule alternating strokes and see which are detected, and when."""
     hits: list = []
     tracker.on_hit = hits.append
-    start = time.time() + 0.6
+    clock = tracker.camera.clock
+    start = clock() + 0.6
     plan = []
     available = {pad["kind"]: pad["id"] for pad in tracker.config["pads"]}
     for index in range(strokes):
@@ -123,7 +150,7 @@ def measure_hits(tracker: Tracker, strokes: int = 24, interval: float = 0.32) ->
         at = start + index * interval
         tracker.handle_command({"cmd": "sim_hit", "at": at, "pad": pad, "controller": controller})
         plan.append((at, pad))
-    while time.time() < start + strokes * interval + 0.5:
+    while clock() < start + strokes * interval + 0.5:
         tracker.step()
 
     latency = float(tracker.config["hits"]["latency_compensation_ms"]) / 1000.0

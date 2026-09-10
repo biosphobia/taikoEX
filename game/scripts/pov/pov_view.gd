@@ -53,6 +53,8 @@ func _ready() -> void:
 	add_child(drum)
 	camera_marker = CameraMarker.new()
 	add_child(camera_marker)
+	# Each model is painted in its controller's LED colour as soon as the
+	# tracker reports it; the skin's hand colours only fill in until then.
 	for entry in [[0, GameSkin.color("hit_left")], [1, GameSkin.color("hit_right")]]:
 		var model := ControllerModel.new(int(entry[0]), entry[1])
 		add_child(model)
@@ -131,7 +133,8 @@ func _update_rays(state: Dictionary) -> void:
 		if not entry.get("visible", false):
 			continue
 		any = true
-		var colour := GameSkin.color("hit_left" if int(entry.get("id", 0)) == 0 else "hit_right")
+		var model: ControllerModel = controllers.get(int(entry.get("id", -1)))
+		var colour := model.colour if model else Color.WHITE
 		var filtered := CameraMarker._vector(entry.get("world", [0, 0, 0]))
 		var raw := CameraMarker._vector(entry.get("raw", entry.get("world", [0, 0, 0])))
 		_ray_mesh.surface_set_color(Color(colour.r, colour.g, colour.b, 0.28))
@@ -246,7 +249,8 @@ func _on_hit(hit: Dictionary) -> void:
 func _update_status(state: Dictionary) -> void:
 	var lines := []
 	var calibrated: bool = state.get("world_calibrated", false)
-	lines.append("%d fps   %s   view: %s" % [int(state.get("fps", 0)),
+	lines.append("%d fps (%dx%d, asked for %d)   %s   view: %s" % [int(state.get("fps", 0)),
+			int(state.get("frame", [0, 0])[0]), int(state.get("frame", [0, 0])[1]), int(state.get("fps_requested", 0)),
 			"space calibrated" if calibrated else "NOT calibrated - do the Space tab first", view_mode])
 	for entry in state.get("controllers", []):
 		var world: Array = entry.get("world", [0, 0, 0])

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .imu import cross3
+
 
 class RayKalman:
     """Constant-velocity Kalman filter for one controller, in world space."""
@@ -165,7 +167,7 @@ def ray_aligned_rotation(direction_cam: np.ndarray, world_rotation: np.ndarray) 
     """
     z = direction_cam / max(np.linalg.norm(direction_cam), 1e-9)
     helper = np.array([0.0, 1.0, 0.0]) if abs(z[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
-    x = np.cross(helper, z)
+    x = cross3(helper, z)
     x /= max(np.linalg.norm(x), 1e-9)
-    y = np.cross(z, x)
+    y = cross3(z, x)
     return world_rotation @ np.column_stack([x, y, z])

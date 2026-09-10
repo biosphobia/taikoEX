@@ -51,6 +51,36 @@ def hsv_mask(hsv: np.ndarray, hsv_min, hsv_max) -> np.ndarray:
     return cv2.bitwise_or(mask_a, mask_b)
 
 
+PIXEL_SETTINGS = ("bright_core_reach_px", "min_radius_px", "max_radius_px", "track_reach_px")
+
+
+def scale_processing(processing: dict, scale: float) -> dict:
+    """The ``processing`` settings converted from the reference width to the live frame.
+
+    Everything measured in pixels - the crop, the mask polygons, the size
+    limits, how far the bright core may reach and the blur - is written for a
+    frame ``optics.reference_width`` wide, so that switching the camera to a
+    smaller, faster mode does not silently change what counts as a sphere.
+    """
+    if abs(scale - 1.0) < 1e-6:
+        return processing
+    scaled = dict(processing)
+    for key in PIXEL_SETTINGS:
+        if key in scaled:
+            scaled[key] = float(scaled[key]) * scale
+    crop = processing.get("crop", {})
+    if crop:
+        scaled["crop"] = {k: int(round(float(v) * scale)) for k, v in crop.items()}
+    scaled["mask_polygons"] = [[[x * scale, y * scale] for x, y in polygon]
+                               for polygon in processing.get("mask_polygons", [])]
+    blur = int(processing.get("blur", 0))
+    if blur > 0:
+        # A blur that scales below one pixel would do nothing; keep the
+        # smallest kernel that still smooths sensor noise.
+        scaled["blur"] = max(3, int(round(blur * scale)) | 1)
+    return scaled
+
+
 def build_region_mask(shape: tuple[int, int], processing: dict) -> np.ndarray | None:
     """Mask of pixels that may contain a controller (crop rectangle minus mask polygons).
 
@@ -94,7 +124,7 @@ def add_bright_core(mask: np.ndarray, hsv: np.ndarray, processing: dict) -> np.n
     the fitted circle jitters.  Here we take the white pixels that are within
     ``bright_core_reach_px`` of the colour mask and merge them in.
     """
-    reach = int(processing.get("bright_core_reach_px", 12))
+    reach = int(round(float(processing.get("bright_core_reach_px", 12))))
     if reach <= 0:
         return mask
     white = cv2.inRange(
@@ -266,14 +296,26 @@ class SphereDetector:
         self.config = config
         self._region_mask = None
         self._region_shape = None
+        self._processing: dict = {}
+        self._processing_shape = None
         self.last_masks: dict[int, np.ndarray] = {}   # for the debug window / preview
         self.last_seen: dict[int, tuple[float, float, float]] = {}   # controller id -> (x, y, r)
+
+    def processing_for(self, shape: tuple[int, int]) -> dict:
+        """The processing settings scaled to this frame size (cached per size)."""
+        if self._processing_shape != shape:
+            from .geometry import pixel_scale
+
+            scale = pixel_scale(self.config["optics"], shape[1])
+            self._processing = scale_processing(self.config["processing"], scale)
+            self._processing_shape = shape
+        return self._processing
 
     def region_mask_for(self, shape: tuple[int, int]) -> np.ndarray | None:
         """Pixels the tracker is allowed to search: the crop, minus the drawn
         mask polygons, minus anything the background learner found."""
         if self._region_shape != shape:
-            region = build_region_mask(shape, self.config["processing"])
+            region = build_region_mask(shape, self.processing_for(shape))
             learned = self._learned_mask(shape)
             if learned is not None:
                 if region is None:
@@ -293,11 +335,12 @@ class SphereDetector:
         return decode_mask(encoded, shape)
 
     def invalidate(self) -> None:
-        """Call after the crop / mask settings changed."""
+        """Call after the crop / mask / processing settings changed."""
         self._region_shape = None
+        self._processing_shape = None
 
     def detect(self, frame_bgr: np.ndarray) -> list[Detection]:
-        processing = self.config["processing"]
+        processing = self.processing_for(frame_bgr.shape[:2])
         blur = int(processing.get("blur", 0))
         if blur > 0:
             k = blur if blur % 2 == 1 else blur + 1
@@ -358,7 +401,9 @@ def sample_colour(frame_bgr: np.ndarray, x: int, y: int, size: int = 12,
 def draw_detections(frame_bgr: np.ndarray, detections: list[Detection], config) -> np.ndarray:
     """Overlay the detected circles, crop and masks on a copy of the frame."""
     out = frame_bgr.copy()
-    processing = config["processing"]
+    from .geometry import pixel_scale
+
+    processing = scale_processing(config["processing"], pixel_scale(config["optics"], out.shape[1]))
     crop = processing.get("crop", {})
     if crop.get("w", 0) > 0 and crop.get("h", 0) > 0:
         cv2.rectangle(out, (int(crop["x"]), int(crop["y"])),

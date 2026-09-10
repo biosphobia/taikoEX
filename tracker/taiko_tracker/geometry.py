@@ -13,16 +13,32 @@ import math
 import numpy as np
 
 
+def pixel_scale(optics: dict, image_width: int) -> float:
+    """How much bigger (or smaller) things look at this resolution than at the
+    reference width the config's pixel values are written for."""
+    reference = float(optics.get("reference_width", 0) or image_width)
+    return image_width / max(1.0, reference)
+
+
 class PinholeModel:
     """Sphere size -> distance, pixel -> ray.  All parameters come from ``optics``."""
 
     def __init__(self, optics: dict, image_width: int, image_height: int):
-        self.focal = max(1.0, float(optics["focal_px"]))
-        self.cx = float(optics["cx"]) if optics.get("cx", -1) >= 0 else image_width / 2.0
-        self.cy = float(optics["cy"]) if optics.get("cy", -1) >= 0 else image_height / 2.0
+        # The config gives its pixel values for a frame ``reference_width``
+        # wide; a camera running at 320x240 sees everything half the size.
+        self.pixel_scale = pixel_scale(optics, image_width)
+        self.focal = max(1.0, float(optics["focal_px"]) * self.pixel_scale)
+        self.cx = float(optics["cx"]) * self.pixel_scale if optics.get("cx", -1) >= 0 else image_width / 2.0
+        self.cy = float(optics["cy"]) * self.pixel_scale if optics.get("cy", -1) >= 0 else image_height / 2.0
         self.sphere_radius = float(optics["sphere_radius_m"])
         self.k1 = float(optics.get("k1", 0.0))
+        # The glow is a per-pixel effect - the blended pixels around the edge
+        # of the sphere - so it is the same number of pixels at any resolution.
         self.radius_offset = float(optics.get("radius_offset_px", 0.0))
+
+    def to_reference_px(self, value_px: float) -> float:
+        """Convert a measurement in live-frame pixels to the config's reference width."""
+        return value_px / self.pixel_scale
 
     def true_radius(self, measured_radius_px: float) -> float:
         """Remove the constant bias from a measured blob radius.
