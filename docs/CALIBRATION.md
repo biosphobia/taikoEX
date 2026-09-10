@@ -4,6 +4,15 @@ Open **Camera & drum calibration** from the main menu.  The tabs are in the orde
 should work through them.  Everything is saved to `tracker/tracker_config.json`
 (press *Save tracker config* if you want to be sure).
 
+The short version, if you have done it before:
+
+1. **Camera** - turn auto exposure off, drop exposure and gain until the room is
+   nearly black and only the spheres are bright.
+2. **Detection** - press **Learn background**.  Do this before anything else.
+3. **Colours** - sample each sphere's colour.
+4. **Space** - two distances for the scale, then origin / right / forward for the axes.
+5. **Pads** - place the drum, or do it in the 3D view where you can see it.
+
 The left half of the screen shows the camera with the detections drawn on top.  The
 status lines under it show each controller's 3D position in metres and its radius in
 pixels - watch them while you tune.
@@ -27,8 +36,17 @@ anything that is the same colour as a sphere - a lamp, a red poster, a TV.
 
 ## 2. Detection
 
-Normally nothing needs changing here.  Switch *Preview shows* to **mask** to see
-exactly what the tracker sees for each colour.
+**Learn background** is the first thing to press, before the colour and space
+steps.  The tracker turns the sphere LEDs off for half a second, looks at what
+in the room still matches a controller's colour - a lamp, a screen, a poster,
+sunlight on a wall - and masks those areas away.  Until that is done, nothing
+stops it preferring a big bright rectangle to a small sphere, and every
+measurement after it would be calibrated against the wrong thing.  Press it
+again whenever you move the camera, change the lighting, or change the sphere
+colours.  **Clear background** undoes it.
+
+Switch *Preview shows* to **mask** to see exactly what the tracker sees for each
+colour.
 
 * *Blur* smooths sensor noise.
 * *Open / Close iterations* remove speckles and bridge gaps.  Both are symmetric so the
@@ -58,11 +76,20 @@ Pick the controller to edit (0 = left hand, 1 = right hand).
 
 ## 4. Space
 
-**Distance scale.**  Hold the controller at a measured distance from the lens (a tape
-measure from the front of the lens to the centre of the sphere), type the distance and
-press *Calibrate distance scale now*.  This sets the focal length.  The defaults
-(545 px for the narrow lens, about 420 px for the wide lens at 640x480) are close enough
-to start with.
+**Distance scale.**  This takes **two** measurements, not one.  Hold the
+controller at about 0.7 m from the lens (a tape measure from the front of the
+lens to the middle of the sphere), type that distance and press *Add distance
+sample*.  Then do it again at about 1.5 m.
+
+Two distances are needed because a glowing sphere always measures about a pixel
+wider than it really is - the blended pixels around its edge pass the colour
+threshold too - and one measurement cannot tell that constant apart from the
+focal length.  With two, the tracker solves for both and reports them.  Skip the
+second sample and every position you get afterwards is scaled by roughly ten per
+cent, which is enough to put the drum in the wrong place.
+
+The defaults (545 px for the narrow lens, about 420 px for the wide lens at
+640x480) are close enough to start with if you have no tape measure.
 
 **Playing space.**  The camera can be anywhere - on a shelf to the side, on the floor
 looking up, tilted.  Three captures define your own axes:
@@ -83,9 +110,16 @@ moves.
   hands near the drum triggers hits.
 * *Re-arm height* - how far the sphere must rise above a pad before it can hit again.
 * *Cooldown* - minimum time between two hits of the same hand.
-* *Latency compensation* - camera and processing delay subtracted from hit times.  The
-  results screen shows your average timing; if it says you are consistently late, raise
-  this (or set the audio offset in Settings).
+* *Latency compensation* - camera and processing delay subtracted from hit times.
+  There are two of these: one for hits timed from the camera and one for hits
+  timed from the controller's accelerometer, which barely lag at all.  The
+  results screen shows your average timing; if it says you are consistently
+  late, raise them (or set the audio offset in Settings).
+* *Use accelerometer* - on by default when a controller is connected over
+  Bluetooth.  The IMU feels the stroke stop, so the timing of a hit no longer
+  depends on the camera seeing the depth of it.  This is what makes a camera on
+  the floor or up on a shelf usable at all.  See
+  [TRACKING.md](TRACKING.md#deciding-when-a-hit-happened).
 
 ## 5. Pads
 
@@ -93,18 +127,32 @@ The top half draws the pads from above (x right, z towards you) and the controll
 dots; the bottom half is a side view showing how high the spheres are above the pads.
 Pads flash when hit.
 
-* **Taiko layout at controller 0 / origin** - places the four pads in a row like a real
-  taiko seen from above, centred on the controller or the calibrated origin: left rim,
-  left face, right face, right rim.
+* **Taiko layout at controller 0 / origin** - rebuilds the drum, centred on the
+  controller or the calibrated origin.  The default is one drum: a face for
+  *don* with a rim around it for *ka*, and the hand that strikes decides left
+  from right.  The `four_pads` style instead puts left rim, left face, right
+  face and right rim in a row; it is easier to aim at deliberately but needs a
+  closer camera.  See
+  [TRACKING.md](TRACKING.md#telling-don-from-ka) for why the single drum is the
+  default.
 * **Place: C0 / C1** - hold that controller where you want the pad and press.
-* **Radius** - size of each disc.  Make the faces bigger and the rims smaller if you keep
-  hitting the wrong one, or move the rims further out.
+* **Radius** - size of each disc or ring.  Make the face bigger if kas are
+  landing as dons.
+
+The **3D view** on the main menu does the same job with the drum drawn in front
+of you: nudge it around with the keyboard, watch your controllers move in real
+time, and see where the camera is sitting relative to you.
 
 Pads are flat discs with a normal vector.  The default normal `(0, 1, 0)` means you hit
 downwards.  Edit `normal` in `tracker_config.json` if you want angled pads (for example
 `[0, 0.8, -0.6]` for a pad you strike forwards and down).
 
 ## Accuracy notes
+
+The numbers below are measured, not guessed:
+`python tools/evaluate_tracking.py` runs the whole pipeline against known truth
+in five simulated rooms.  [TRACKING.md](TRACKING.md#what-to-expect) has the
+table.
 
 * Depth (distance from the camera) is measured from the sphere's size.  A 45 mm sphere is
   only ~8 px across at 1.5 m with a 640x480 camera, so depth noise grows quickly with

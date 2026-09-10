@@ -55,6 +55,31 @@ Hit sounds are `data/sounds/don.wav`, `ka.wav` and `balloon_pop.wav` (ogg also w
 
 `tracker/tracker_config.json` - every key is documented in
 `tracker/taiko_tracker/config.py`.  The calibration screen edits the same file live.
+The sections worth knowing about:
+
+* `pads` - the drum itself.  Each entry is a disc or a ring with a centre, a
+  normal, an outer radius and an inner radius, so you can build any shape out of
+  them: a single drum with a rim (the default), four pads in a row, angled pads,
+  three drums side by side.  `"side": "any"` means the hand that strikes decides
+  left from right.  See [TRACKING.md](TRACKING.md#telling-don-from-ka).
+* `hits` - what counts as a hit and when it happened.
+* `fusion` - the position filter, which knows a camera measures direction well
+  and distance badly.
+* `imu` - the controller's gyro and accelerometer.
+* `background` - the learned mask of things in the room that look like a sphere.
+* `simulation` - only used by the `simulated` camera backend: which of the five
+  test rooms to render, and where to put the virtual camera.
+
+## Models for the 3D view
+
+The 3D view draws the drum and the controllers procedurally, but it will use
+your own models instead if you drop them in:
+
+* `data/models/drum.glb` replaces the drum body
+* `data/models/controller.glb` replaces the PS Move
+
+Model the controller with its handle along +Y and the sphere at the top, which
+is how the tracker describes it, and it will tip and roll with the real one.
 
 ## Code
 

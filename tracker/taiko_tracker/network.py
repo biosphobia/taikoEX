@@ -35,12 +35,27 @@ class StateSender:
         except OSError:
             pass
 
+    def close(self) -> None:
+        self.sock.close()
+
 
 class CommandReceiver:
+    """The tracker's command port.
+
+    Deliberately *not* set to reuse the address: if another tracker is already
+    running, this must fail loudly.  Two trackers sharing one port would each
+    receive some of the commands, and the calibration would quietly be applied
+    to whichever one happened to get the packet.
+    """
+
     def __init__(self, port: int, host: str = "0.0.0.0"):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((host, int(port)))
+        try:
+            self.sock.bind((host, int(port)))
+        except OSError as exc:
+            raise RuntimeError(
+                f"Port {port} is already in use - another tracker is probably running. "
+                f"Stop it, or set network.command_port to something else.") from exc
         self.sock.setblocking(False)
 
     def poll(self) -> list[tuple[dict, tuple]]:
@@ -63,6 +78,9 @@ class CommandReceiver:
             self.sock.sendto(json.dumps(payload, separators=(",", ":")).encode("utf-8"), addr)
         except OSError:
             pass
+
+    def close(self) -> None:
+        self.sock.close()
 
 
 class PreviewSender:
@@ -95,6 +113,9 @@ class PreviewSender:
             except OSError:
                 return False
         return True
+
+    def close(self) -> None:
+        self.sock.close()
 
 
 class PreviewReceiver:
@@ -130,3 +151,6 @@ class PreviewReceiver:
         if len(self._parts) > 8:   # drop stale incomplete frames
             self._parts.clear()
         return latest
+
+    def close(self) -> None:
+        self.sock.close()

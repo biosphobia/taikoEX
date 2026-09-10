@@ -231,6 +231,23 @@ func _build_detection_tab() -> void:
 	var box := _tab("Detection")
 	UiKit.option(box, "Preview shows", ["camera", "mask"], "camera", func(v): TrackerClient.send_command({"cmd": "set_preview", "mode": v}))
 	UiKit.slider(box, "Preview fps", 1, 60, 1, float(_value("network.preview_fps", 20)), func(v): _set_path("network.preview_fps", int(v)))
+
+	box.add_child(UiKit.heading("Learn the room  (do this first)"))
+	box.add_child(UiKit.label("Turns the sphere LEDs off for a moment, sees what in the room still looks like a controller - a lamp, a screen, a poster, sunlight - and masks it away. Everything else you calibrate depends on this, so press it before the Colours and Space tabs, and again whenever you move the camera or change the lighting.", true))
+	var learn_row := UiKit.row(box)
+	learn_row.add_child(UiKit.button("Learn background", func():
+		TrackerClient.send_command({"cmd": "learn_background", "save": true}, func(reply):
+			status_label.text = "learning the room..."
+			await get_tree().create_timer(1.5).timeout
+			TrackerClient.send_command({"cmd": "background_result"}, func(result):
+				var found: Dictionary = result.get("result", {})
+				status_label.text = "masked %s area(s), %s%% of the frame" % [
+					str(found.get("regions", "?")), str(found.get("covered_percent", "?"))]
+				TrackerClient.send_command({"cmd": "get_config"}, _on_config))), 200))
+	learn_row.add_child(UiKit.button("Clear background", func():
+		TrackerClient.send_command({"cmd": "clear_background", "save": true}, _on_simple_reply), 200))
+	UiKit.slider(box, "Grow masked areas (px)", 0, 30, 1, float(_value("background.dilate_px", 6)), func(v): _set_path("background.dilate_px", int(v)))
+	UiKit.slider(box, "Frames to watch", 5, 120, 1, float(_value("background.learn_frames", 30)), func(v): _set_path("background.learn_frames", int(v)))
 	box.add_child(UiKit.heading("Blob cleanup"))
 	UiKit.slider(box, "Blur (px)", 0, 15, 1, float(_value("processing.blur", 3)), func(v): _set_path("processing.blur", int(v)))
 	UiKit.slider(box, "Open iterations (speckles)", 0, 5, 1, float(_value("processing.open_iterations", 1)), func(v): _set_path("processing.open_iterations", int(v)))
@@ -291,15 +308,25 @@ func _rebuild_colour_tab() -> void:
 
 func _build_space_tab() -> void:
 	var box := _tab("Space")
-	box.add_child(UiKit.heading("1. Distance scale"))
-	box.add_child(UiKit.label("Hold controller %d at a measured distance from the lens (tape measure) and press the button. Or type the focal length if you know it." % controller_id, true))
-	var distance := [1.0]
-	UiKit.spin(box, "Measured distance (m)", 0.3, 4.0, 0.01, 1.0, func(v): distance[0] = v)
-	box.add_child(UiKit.button("Calibrate distance scale now", func():
-		TrackerClient.send_command({"cmd": "calibrate_focal", "controller": controller_id, "distance_m": distance[0], "save": true}, func(reply):
-			status_label.text = "focal = %s px" % str(reply.get("focal_px", reply.get("error", "?")))
-			TrackerClient.send_command({"cmd": "get_config"}, _on_config)), 300))
+	box.add_child(UiKit.heading("1. Distance scale  (two measurements)"))
+	box.add_child(UiKit.label("Hold controller %d a measured distance from the lens - tape measure from the front of the lens to the middle of the sphere - type it and add the sample. Then do it again at a clearly different distance, say 0.7 m and 1.5 m.\n\nTwo are needed because a glowing sphere always measures about a pixel wider than it is, and one distance cannot tell that constant apart from the focal length. With one sample every position you get comes out scaled by roughly ten per cent." % controller_id, true))
+	var distance := [0.7]
+	UiKit.spin(box, "Measured distance (m)", 0.3, 4.0, 0.01, 0.7, func(v): distance[0] = v)
+	var distance_row := UiKit.row(box)
+	distance_row.add_child(UiKit.button("Add distance sample", func():
+		TrackerClient.send_command({"cmd": "calibrate_distance", "controller": controller_id, "distance_m": distance[0], "save": true}, func(reply):
+			if not reply.get("ok", false):
+				status_label.text = str(reply.get("error", "failed"))
+			elif reply.has("focal_px"):
+				status_label.text = "focal %s px, sphere glow %s px  (samples: %s)" % [
+					str(reply["focal_px"]), str(reply.get("radius_offset_px", 0)), str(reply.get("samples", []))]
+			else:
+				status_label.text = "sample taken at %.2f m - now measure a different distance" % distance[0]
+			TrackerClient.send_command({"cmd": "get_config"}, _on_config)), 220))
+	distance_row.add_child(UiKit.button("Start over", func():
+		TrackerClient.send_command({"cmd": "calibrate_distance_reset"}, _on_simple_reply), 140))
 	UiKit.spin(box, "Focal length (px)", 100, 2000, 1, float(_value("optics.focal_px", 545)), func(v): _set_path("optics.focal_px", v))
+	UiKit.spin(box, "Sphere glow (px)", -3, 6, 0.05, float(_value("optics.radius_offset_px", 0.0)), func(v): _set_path("optics.radius_offset_px", v))
 	UiKit.spin(box, "Sphere radius (m)", 0.01, 0.05, 0.0005, float(_value("optics.sphere_radius_m", 0.0225)), func(v): _set_path("optics.sphere_radius_m", v))
 
 	box.add_child(UiKit.heading("2. Playing space (world axes)"))
@@ -313,11 +340,35 @@ func _build_space_tab() -> void:
 					config["world"] = reply["world"]), 160))
 	box.add_child(UiKit.button("Reset world calibration", func(): TrackerClient.send_command({"cmd": "world_reset", "save": true}), 240))
 
-	box.add_child(UiKit.heading("3. Hit detection"))
+	box.add_child(UiKit.heading("3. Controller orientation"))
+	box.add_child(UiKit.label("The gyro and accelerometer give the 3D view the controller's tilt, and time the hits. Hold the controller upright with the sphere at the top and press Set upright so the model matches your real one. Pressing the MOVE button re-points its heading at the camera at any time.", true))
+	var imu_row := UiKit.row(box)
+	imu_row.add_child(UiKit.button("Set upright", func():
+		TrackerClient.send_command({"cmd": "imu_calibrate_upright", "controller": controller_id, "save": true}, func(reply):
+			status_label.text = "handle axis %s" % str(reply.get("handle_axis", reply.get("error", "?")))), 160))
+	imu_row.add_child(UiKit.button("Re-centre heading", func():
+		TrackerClient.send_command({"cmd": "recenter_orientation"}, _on_simple_reply), 180))
+	UiKit.check(box, "Use the gyro and accelerometer", _value("imu.enabled", true), func(v): _set_path("imu.enabled", v))
+
+	box.add_child(UiKit.heading("4. Hit detection"))
+	UiKit.option(box, "A hit is...", ["stroke", "plane"], str(_value("hits.mode", "stroke")), func(v): _set_path("hits.mode", v))
+	box.add_child(UiKit.label("stroke: the bottom of the swing, where your hand turns around. Robust, because it does not rely on the camera judging distance.\nplane: the sphere crossing the pad surface. Sharper, but only as good as the depth estimate - use it with a close camera in front of you.", true))
+	UiKit.check(box, "Time hits from the controller's accelerometer", _value("hits.use_accelerometer", true), func(v): _set_path("hits.use_accelerometer", v))
+	UiKit.slider(box, "Strike threshold (g)", 0.5, 8.0, 0.1, float(_value("hits.accel_threshold_g", 2.5)), func(v): _set_path("hits.accel_threshold_g", v))
+	UiKit.slider(box, "Full-strength strike (g)", 2.0, 15.0, 0.5, float(_value("hits.hard_hit_g", 6.0)), func(v): _set_path("hits.hard_hit_g", v))
 	UiKit.slider(box, "Min stroke speed (m/s)", 0.1, 3.0, 0.05, float(_value("hits.min_speed_mps", 0.5)), func(v): _set_path("hits.min_speed_mps", v))
-	UiKit.slider(box, "Re-arm height (m)", 0.005, 0.15, 0.005, float(_value("hits.rearm_height_m", 0.04)), func(v): _set_path("hits.rearm_height_m", v))
+	UiKit.slider(box, "Re-arm lift (m)", 0.005, 0.15, 0.005, float(_value("hits.rearm_height_m", 0.04)), func(v): _set_path("hits.rearm_height_m", v))
+	UiKit.slider(box, "Height window (m)", 0.05, 0.6, 0.01, float(_value("hits.height_window_m", 0.25)), func(v): _set_path("hits.height_window_m", v))
 	UiKit.slider(box, "Cooldown (s)", 0.0, 0.3, 0.005, float(_value("hits.cooldown_s", 0.05)), func(v): _set_path("hits.cooldown_s", v))
 	UiKit.slider(box, "Latency compensation (ms)", 0, 120, 1, float(_value("hits.latency_compensation_ms", 25)), func(v): _set_path("hits.latency_compensation_ms", v))
+	UiKit.slider(box, "Latency, accelerometer hits (ms)", -40, 80, 1, float(_value("hits.latency_compensation_imu_ms", 15)), func(v): _set_path("hits.latency_compensation_imu_ms", v))
+
+	box.add_child(UiKit.heading("5. Position smoothing"))
+	box.add_child(UiKit.label("A camera measures direction well and distance badly, so the filter smooths distance hard and leaves the sideways axes alone. There is rarely a reason to change these.", true))
+	UiKit.check(box, "Smooth positions", _value("fusion.enabled", true), func(v): _set_path("fusion.enabled", v))
+	UiKit.check(box, "Feed the accelerometer into the prediction", _value("fusion.use_imu_accel", true), func(v): _set_path("fusion.use_imu_accel", v))
+	UiKit.slider(box, "Blob centre noise (px)", 0.05, 2.0, 0.05, float(_value("fusion.pixel_noise_px", 0.35)), func(v): _set_path("fusion.pixel_noise_px", v))
+	UiKit.slider(box, "Blob radius noise (px)", 0.05, 2.0, 0.05, float(_value("fusion.radius_noise_px", 0.45)), func(v): _set_path("fusion.radius_noise_px", v))
 
 
 func _build_pads_tab() -> void:
@@ -325,15 +376,24 @@ func _build_pads_tab() -> void:
 	pad_view = PadView.new()
 	pad_view.pads = config.get("pads", [])
 	box.add_child(pad_view)
+	var style := ["single_drum"]
+	UiKit.option(box, "Layout", ["single_drum", "four_pads"], "single_drum", func(v): style[0] = v)
+	box.add_child(UiKit.label("single_drum: one drum, face for don and rim for ka, and the hand that strikes decides left from right. The default, and the one a camera can judge most reliably.\nfour_pads: left rim, left face, right face, right rim in a row. Easier to aim at, but it needs a closer camera.", true))
 	var presets := UiKit.row(box)
-	presets.add_child(UiKit.button("Taiko layout at controller 0", func():
-		TrackerClient.send_command({"cmd": "pad_layout_taiko", "controller": 0, "save": true}, _after_pad_change), 240))
-	presets.add_child(UiKit.button("Taiko layout at origin", func():
-		TrackerClient.send_command({"cmd": "pad_layout_taiko", "center": [0, 0, 0], "save": true}, _after_pad_change), 220))
+	presets.add_child(UiKit.button("Rebuild at controller 0", func():
+		TrackerClient.send_command({"cmd": "pad_layout_taiko", "style": style[0], "controller": 0, "save": true}, _after_pad_change), 220))
+	presets.add_child(UiKit.button("Rebuild at origin", func():
+		TrackerClient.send_command({"cmd": "pad_layout_taiko", "style": style[0], "center": [0, 0, 0], "save": true}, _after_pad_change), 200))
+	presets.add_child(UiKit.button("Open the 3D view", func(): UiKit.go_to("res://scenes/pov_view.tscn"), 180))
 	box.add_child(UiKit.label("Place a pad: hold the controller where you want it and press the button. Pads are flat discs; normal (0,1,0) means 'hit downwards'.", true))
 	_pads_box = VBoxContainer.new()
 	box.add_child(_pads_box)
 	_rebuild_pad_list()
+
+
+func _on_simple_reply(reply: Dictionary) -> void:
+	status_label.text = str(reply.get("error", "done"))
+	TrackerClient.send_command({"cmd": "get_config"}, _on_config)
 
 
 func _after_pad_change(_reply: Dictionary) -> void:

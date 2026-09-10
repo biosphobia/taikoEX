@@ -17,11 +17,24 @@ class PinholeModel:
     """Sphere size -> distance, pixel -> ray.  All parameters come from ``optics``."""
 
     def __init__(self, optics: dict, image_width: int, image_height: int):
-        self.focal = float(optics["focal_px"])
+        self.focal = max(1.0, float(optics["focal_px"]))
         self.cx = float(optics["cx"]) if optics.get("cx", -1) >= 0 else image_width / 2.0
         self.cy = float(optics["cy"]) if optics.get("cy", -1) >= 0 else image_height / 2.0
         self.sphere_radius = float(optics["sphere_radius_m"])
         self.k1 = float(optics.get("k1", 0.0))
+        self.radius_offset = float(optics.get("radius_offset_px", 0.0))
+
+    def true_radius(self, measured_radius_px: float) -> float:
+        """Remove the constant bias from a measured blob radius.
+
+        A glowing sphere always measures slightly *bigger* than it is: the
+        pixels at its edge are a blend of sphere and background, and enough of
+        them pass the colour threshold to add roughly a pixel all the way
+        round.  The amount depends on the camera and the LED brightness but not
+        on where the sphere is, so it is one number - measure it once with the
+        two-point distance calibration.
+        """
+        return measured_radius_px - self.radius_offset
 
     def undistort(self, x: float, y: float) -> tuple[float, float]:
         """Remove simple radial distortion from normalised coordinates."""
@@ -39,6 +52,7 @@ class PinholeModel:
         Solving for d gives the formula below (exact for a sphere on the
         optical axis, very close elsewhere).
         """
+        radius_px = self.true_radius(radius_px)
         if radius_px <= 0:
             return float("inf")
         return self.sphere_radius * math.sqrt(1.0 + (self.focal / radius_px) ** 2)
@@ -52,7 +66,35 @@ class PinholeModel:
     def focal_from_known_distance(self, radius_px: float, distance_m: float) -> float:
         """Inverse of ``distance_from_radius``: used by the focal length calibration."""
         ratio = (distance_m / self.sphere_radius) ** 2 - 1.0
-        return radius_px * math.sqrt(max(ratio, 0.0))
+        return self.true_radius(radius_px) * math.sqrt(max(ratio, 0.0))
+
+    def apparent_radius(self, distance_m: float) -> float:
+        """How big the sphere should look at a given distance, before the bias."""
+        span = distance_m ** 2 - self.sphere_radius ** 2
+        if span <= 0:
+            return float("inf")
+        return self.focal * self.sphere_radius / math.sqrt(span)
+
+
+def solve_focal_and_offset(samples: list[tuple[float, float]], sphere_radius_m: float) -> tuple[float, float]:
+    """Fit ``measured_radius = focal * k(distance) + offset`` to two or more samples.
+
+    Each sample is ``(measured_radius_px, distance_m)``.  Two distances that
+    are far apart (say 0.6 m and 1.6 m) separate the focal length from the
+    constant glow, which one distance alone cannot do.
+    """
+    if len(samples) < 2:
+        raise ValueError("need at least two distances")
+    k = np.array([sphere_radius_m / math.sqrt(max(1e-9, d ** 2 - sphere_radius_m ** 2)) for _, d in samples])
+    radii = np.array([r for r, _ in samples])
+    distances = [d for _, d in samples]
+    if max(distances) / max(1e-6, min(distances)) < 1.15:
+        raise ValueError("the two distances are too close together (use something like 0.6 m and 1.5 m)")
+    design = np.column_stack([k, np.ones(len(samples))])
+    (focal, offset), *_ = np.linalg.lstsq(design, radii, rcond=None)
+    if not np.isfinite(focal) or focal <= 1.0:
+        raise ValueError("that fit gives a nonsensical focal length; re-measure the distances")
+    return float(focal), float(offset)
 
 
 class WorldTransform:
@@ -67,6 +109,21 @@ class WorldTransform:
 
     def to_camera(self, world_point: np.ndarray) -> np.ndarray:
         return self.rotation.T @ (world_point - self.translation)
+
+    def camera_pose(self) -> dict:
+        """Where the camera sits in the calibrated playing space.
+
+        The transform is world = rotation * camera + translation, so the lens
+        itself (the origin of camera space) lands on ``translation``, and the
+        camera's own axes are the columns of ``rotation``.  Camera y points
+        down, hence the minus sign on ``up``.
+        """
+        return {
+            "position": [round(float(v), 4) for v in self.translation],
+            "right": [round(float(v), 4) for v in self.rotation[:, 0]],
+            "up": [round(float(-v), 4) for v in self.rotation[:, 1]],
+            "forward": [round(float(v), 4) for v in self.rotation[:, 2]],
+        }
 
     def as_config(self) -> dict:
         return {

@@ -14,44 +14,71 @@ from pathlib import Path
 import numpy as np
 
 from . import __version__
+from .background import BackgroundLearner
 from .camera import apply_orientation, open_camera
 from .config import DEFAULT_CONFIG, Config
-from .geometry import PinholeModel, WorldCalibration, WorldTransform
+from .geometry import PinholeModel, WorldCalibration, WorldTransform, solve_focal_and_offset
+from .imu import OrientationFilter, quat_rotate
 from .keysender import KeySender
 from .network import CommandReceiver, PreviewSender, StateSender
-from .pads import HitDetector, Pad, taiko_layout
-from .psmove_hid import MoveManager
+from .pads import LAYOUTS, HitDetector, Pad
+from .psmove_hid import BUTTON_BITS, MoveManager
+from .tracking_filter import RayKalman, measurement_covariance, radius_is_plausible, ray_aligned_rotation
 from .vision import Detection, SphereDetector, draw_detections, sample_colour
 
 
 class TrackedController:
-    """Per-controller runtime state (smoothed position, visibility, ...)."""
+    """Per-controller runtime state: position, orientation and their filters."""
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, fusion_cfg: dict, imu_cfg: dict):
         self.cfg = cfg
         self.id = int(cfg["id"])
         self.visible = False
         self.pixel = (0.0, 0.0, 0.0)
         self.camera_pos = np.zeros(3)
-        self.world_pos = np.zeros(3)          # smoothed, for display and pad placement
-        self.raw_world_pos = np.zeros(3)      # unsmoothed, for hit timing (no lag)
-        self.smoothed: np.ndarray | None = None
+        self.world_pos = np.zeros(3)          # filtered, used for hits and display
+        self.raw_world_pos = np.zeros(3)      # straight from the camera, before filtering
+        self.velocity = np.zeros(3)
+        self.kalman = RayKalman(fusion_cfg)
+        self.orientation = OrientationFilter(imu_cfg)
         self.last_seen = 0.0
+        self.last_radius = 0.0
+        self.size_trusted = True
+        self.untrusted_frames = 0
+        self.last_imu_time = 0.0
+        self.last_buttons = 0
 
-    def update(self, det: Detection, camera_pos: np.ndarray | None, world_pos: np.ndarray | None, now: float) -> None:
-        self.visible = det.found
-        if not det.found:
-            return
+    def measure(self, det: Detection, camera_pos: np.ndarray, raw_world: np.ndarray,
+                covariance: np.ndarray, now: float, accel_world: np.ndarray | None) -> None:
+        """Fold one camera measurement into the filter."""
+        self.visible = True
         self.pixel = (det.x, det.y, det.radius)
         self.camera_pos = camera_pos
-        self.raw_world_pos = world_pos
-        alpha = 1.0 - float(self.cfg.get("smoothing", 0.0))
-        if self.smoothed is None or now - self.last_seen > 0.25:
-            self.smoothed = world_pos.copy()
+        self.raw_world_pos = raw_world
+        gap = now - self.last_seen
+        if gap > float(self.kalman.cfg.get("reset_after_s", 0.3)):
+            self.kalman.reset()
         else:
-            self.smoothed = self.smoothed + (world_pos - self.smoothed) * max(0.05, alpha)
-        self.world_pos = self.smoothed
+            self.kalman.predict(max(1e-4, gap), accel_world)
+        self.kalman.update(raw_world, covariance)
+        self.world_pos = self.kalman.position.copy()
+        self.velocity = self.kalman.velocity.copy()
         self.last_seen = now
+
+    def lost(self) -> None:
+        self.visible = False
+
+    def update_orientation(self, accel_g, gyro_rad_s, now: float) -> None:
+        dt = now - self.last_imu_time if self.last_imu_time > 0 else 1.0 / 60.0
+        self.last_imu_time = now
+        self.orientation.update(accel_g, gyro_rad_s, min(0.2, max(1e-4, dt)))
+
+    def world_acceleration(self) -> np.ndarray | None:
+        """Controller acceleration in world space, gravity removed (m/s^2)."""
+        if not self.orientation.initialised or self.last_imu_time <= 0.0:
+            return None
+        reading = quat_rotate(self.orientation.q, self.orientation.last_accel_g)
+        return (reading - np.array([0.0, 1.0, 0.0])) * 9.80665
 
 
 class Tracker:
@@ -64,9 +91,13 @@ class Tracker:
         self.model = PinholeModel(config["optics"], *self.frame_size)
         self.world = WorldTransform(config["world"])
         self.world_calibration = WorldCalibration()
-        self.controllers = {int(c["id"]): TrackedController(c) for c in config["controllers"]}
+        self.controllers = {int(c["id"]): TrackedController(c, config["fusion"], config["imu"])
+                            for c in config["controllers"]}
         self.hits = HitDetector([Pad.from_config(p) for p in config["pads"]], config["hits"])
         self.moves = MoveManager(config)
+        self.background = BackgroundLearner(config)
+        self.background.on_finished = self._on_background_learned
+        self.background_result: dict = {}
         self.keys = KeySender(float(config["osu"]["key_hold_ms"]))
         net = config["network"]
         self.state_out = StateSender(net["game_host"], net["state_port"])
@@ -79,6 +110,8 @@ class Tracker:
         self.last_frame = None
         self.last_detections: list[Detection] = []
         self.recent_hits: list[dict] = []   # last few hits, for the game UI
+        self.pads_revision = 0              # bumped whenever the pad layout changes
+        self.distance_samples: list[tuple[float, float]] = []   # (radius_px, distance_m)
         self.open_camera()
 
     # ------------------------------------------------------------------
@@ -108,11 +141,15 @@ class Tracker:
         if "pads" in patch or "hits" in patch:
             self.reload_pads()
         if "controllers" in patch:
-            self.controllers = {int(c["id"]): TrackedController(c) for c in self.config["controllers"]}
+            self.controllers = {int(c["id"]): TrackedController(c, self.config["fusion"], self.config["imu"])
+                                for c in self.config["controllers"]}
+        if "background" in patch:
+            self.detector.invalidate()
         if "osu" in patch:
             self.keys.hold_s = float(self.config["osu"]["key_hold_ms"]) / 1000.0
 
     def reload_pads(self) -> None:
+        self.pads_revision += 1
         self.hits.reload([Pad.from_config(p) for p in self.config["pads"]], self.config["hits"])
         if hasattr(self.camera, "reload_pads"):
             self.camera.reload_pads()
@@ -124,6 +161,15 @@ class Tracker:
             self.frame_size = (frame.shape[1], frame.shape[0])
             self.model = PinholeModel(self.config["optics"], *self.frame_size)
         self.last_frame = frame
+        # While the background learner is running the spheres are dark, so the
+        # frame is evidence about the room rather than about the controllers.
+        if self.background.active:
+            if self.background.feed(frame):
+                self.set_leds(True)
+                self.detector.invalidate()
+            self.last_detections = []
+            return self.build_state(timestamp, [])
+
         detections = self.detector.detect(frame)
         self.last_detections = detections
         new_hits = []
@@ -131,20 +177,94 @@ class Tracker:
             tracked = self.controllers.get(det.controller_id)
             if tracked is None:
                 continue
-            if det.found:
-                cam_pos = self.model.pixel_to_camera(det.x, det.y, det.radius)
-                world_pos = self.world.to_world(cam_pos)
-                tracked.update(det, cam_pos, world_pos, timestamp)
-                new_hits.extend(self.hits.update(det.controller_id, tracked.raw_world_pos, timestamp))
+            if not det.found:
+                tracked.lost()
+                continue
+            fusion = self.config["fusion"]
+            cam_pos = self.model.pixel_to_camera(det.x, det.y, det.radius)
+            world_pos = self.world.to_world(cam_pos)
+            # The accelerometer is used for two separate things - predicting
+            # the motion, and timing the hit - each with its own switch.
+            accel = tracked.world_acceleration()
+            predict_accel = accel if fusion.get("use_imu_accel", True) else None
+            if fusion.get("enabled", True):
+                distance = float(np.linalg.norm(cam_pos))
+                # A sphere cannot suddenly look half its size.  When it does,
+                # keep the direction and let the filter hold the distance.
+                tracked.size_trusted = radius_is_plausible(
+                    tracked.last_radius, det.radius, distance,
+                    max(1e-4, timestamp - tracked.last_seen), fusion)
+                if tracked.size_trusted:
+                    tracked.untrusted_frames = 0
+                else:
+                    tracked.untrusted_frames += 1
+                    # Give up doubting eventually: if the sphere really has
+                    # been this size for a while, it is not an obstruction.
+                    if tracked.untrusted_frames > int(fusion.get("untrusted_frames_max", 20)):
+                        tracked.size_trusted = True
+                        tracked.untrusted_frames = 0
+                rotation = ray_aligned_rotation(cam_pos, self.world.rotation)
+                covariance = measurement_covariance(self.model, det.radius, distance, rotation,
+                                                   fusion, det.completeness,
+                                                   trust_size=tracked.size_trusted)
+                if not tracked.size_trusted:
+                    # Put the measurement back on the ray at the distance we
+                    # already believe, so only its direction is used.
+                    believed = self.world.to_camera(tracked.kalman.position) if tracked.kalman.initialised else cam_pos
+                    scale = float(np.linalg.norm(believed)) / max(distance, 1e-6)
+                    world_pos = self.world.to_world(cam_pos * scale)
+                tracked.measure(det, cam_pos, world_pos, covariance, timestamp, predict_accel)
             else:
-                tracked.update(det, None, None, timestamp)
+                tracked.size_trusted = True
+                tracked.measure(det, cam_pos, world_pos, np.eye(3) * 1e-6, timestamp, None)
+            # Only believe a new size once it has been accepted; otherwise the
+            # obstructed reading would become the yardstick for the next frame
+            # and everything after it would look perfectly reasonable.
+            if tracked.size_trusted:
+                tracked.last_radius = det.radius
+            new_hits.extend(self.hits.update(det.controller_id, tracked.world_pos, timestamp,
+                                             tracked.velocity, accel))
         for hit in new_hits:
             self.on_hit(hit)
         return self.build_state(timestamp, new_hits)
 
+    def update_controllers_imu(self, timestamp: float) -> None:
+        """Feed the IMU into each controller's orientation filter."""
+        if not self.config["imu"].get("enabled", True):
+            return
+        scale = float(self.config["imu"].get("gyro_rad_per_unit", 0.001065))
+        for tracked in self.controllers.values():
+            sample = None
+            move = self.moves.state_for(tracked.id)
+            if move is not None and move.connected:
+                sample = (move.accel_g, [v * scale for v in move.gyro_raw])
+                if self.config["imu"].get("recenter_with_move_button", True):
+                    pressed_now = bool(move.buttons & BUTTON_BITS["move"])
+                    if pressed_now and not (tracked.last_buttons & BUTTON_BITS["move"]):
+                        tracked.orientation.recenter_yaw()
+                    tracked.last_buttons = move.buttons
+            elif self.camera is not None and hasattr(self.camera, "imu_sample"):
+                sample = self.camera.imu_sample(tracked.id)
+            if sample is not None:
+                tracked.update_orientation(sample[0], sample[1], timestamp)
+
+    def set_leds(self, on: bool) -> None:
+        """Turn every sphere on or off (used while learning the background)."""
+        self.moves.set_all_leds(on)
+        if self.camera is not None and hasattr(self.camera, "set_leds"):
+            self.camera.set_leds(on)
+
+    def _on_background_learned(self, result: dict) -> None:
+        self.background_result = result
+        self.detector.invalidate()
+        print(f"[background] masked {result['regions']} region(s), {result['covered_percent']}% of the frame")
+
     def on_hit(self, hit) -> None:
         if self.config["osu"]["enabled"]:
-            key = self.config["osu"]["keys"].get(hit.pad_id, "")
+            keys = self.config["osu"]["keys"]
+            # Keys are named "<side>_<kind>"; with a single drum the side comes
+            # from the hand, so the same pad types both d/f and j/k.
+            key = keys.get(f"{hit.side}_{hit.kind}") or keys.get(hit.pad_id, "")
             self.keys.tap(key)
         if self.config["debug"]["print_hits"]:
             print(f"[hit] {hit.pad_id:10s} ctrl {hit.controller_id}  {hit.speed:4.2f} m/s")
@@ -167,6 +287,10 @@ class Tracker:
                 "px": [round(v, 1) for v in tracked.pixel],
                 "cam": [round(float(v), 4) for v in tracked.camera_pos],
                 "world": [round(float(v), 4) for v in tracked.world_pos],
+                "raw": [round(float(v), 4) for v in tracked.raw_world_pos],
+                "vel": [round(float(v), 3) for v in tracked.velocity],
+                "quat": tracked.orientation.as_list(),
+                "imu": bool(tracked.orientation.initialised),
                 "hid": move is not None and move.connected,
             }
             if move is not None:
@@ -175,7 +299,7 @@ class Tracker:
                 entry["battery"] = move.battery
                 entry["accel"] = [round(a, 3) for a in move.accel_g]
             controllers.append(entry)
-        return {
+        state = {
             "type": "state",
             "t": round(timestamp, 4),
             "fps": round(self.fps, 1),
@@ -184,9 +308,13 @@ class Tracker:
             "hits": [self.hit_to_dict(h) for h in new_hits],
             "world_calibrated": bool(self.config["world"].get("calibrated", False)),
             "world_points": sorted(self.world_calibration.points),
+            "camera_pose": self.world.camera_pose(),
+            "pads_revision": self.pads_revision,
             "osu": bool(self.config["osu"]["enabled"]),
             "hid_available": self.moves.available,
+            "learning_background": self.background.active,
         }
+        return state
 
     # ------------------------------------------------------------------
     def handle_command(self, msg: dict) -> dict:
@@ -289,6 +417,31 @@ class Tracker:
                 "connected": {slot: c.serial for slot, c in self.moves.controllers.items()}}
 
     # -- calibration ---------------------------------------------------
+    def cmd_calibrate_distance(self, msg):
+        """Add one sample to the two-point distance calibration.
+
+        Hold the controller a measured distance from the lens and call this,
+        then repeat at a clearly different distance.  With two samples the
+        tracker can separate the focal length from the constant glow around
+        the sphere, which one distance alone cannot do.
+        """
+        tracked = self._tracked(int(msg.get("controller", 0)))
+        distance = float(msg["distance_m"])
+        self.distance_samples = [s for s in self.distance_samples if abs(s[1] - distance) > 0.05]
+        self.distance_samples.append((float(tracked.pixel[2]), distance))
+        result = {"samples": [[round(r, 2), round(d, 3)] for r, d in self.distance_samples]}
+        if len(self.distance_samples) >= 2:
+            focal, offset = solve_focal_and_offset(self.distance_samples, float(self.config["optics"]["sphere_radius_m"]))
+            self.config["optics"]["focal_px"] = round(focal, 2)
+            self.config["optics"]["radius_offset_px"] = round(offset, 3)
+            self.model = PinholeModel(self.config["optics"], *self.frame_size)
+            result.update(focal_px=self.config["optics"]["focal_px"],
+                          radius_offset_px=self.config["optics"]["radius_offset_px"])
+        return result
+
+    def cmd_calibrate_distance_reset(self, msg):
+        self.distance_samples = []
+
     def cmd_calibrate_focal(self, msg):
         """Hold a controller at a known distance from the lens and call this."""
         tracked = self._tracked(int(msg.get("controller", 0)))
@@ -335,20 +488,96 @@ class Tracker:
         return {"pad": pad}
 
     def cmd_pad_layout_taiko(self, msg):
-        """Reset the pads to the standard taiko layout, centred on a point or controller."""
+        """Reset the pads to a preset layout, centred on a point or a controller.
+
+        ``style`` is "single_drum" (one face with a rim around it, the default)
+        or "four_pads" (four targets in a row).
+        """
         if "center" in msg:
             center = np.array(msg["center"], dtype=float)
         elif "controller" in msg:
             center = self._tracked(int(msg["controller"])).world_pos
         else:
             center = np.zeros(3)
-        self.config["pads"] = taiko_layout(center, float(msg.get("face_spacing", 0.10)),
-                                           float(msg.get("rim_spacing", 0.30)), float(msg.get("radius", 0.11)))
+        style = str(msg.get("style", "single_drum"))
+        builder = LAYOUTS.get(style)
+        if builder is None:
+            raise KeyError(f"unknown pad layout '{style}' (try {', '.join(LAYOUTS)})")
+        extra = {k: float(v) for k, v in msg.items()
+                 if k in ("face_radius", "rim_width", "gap", "face_spacing", "rim_spacing", "radius")}
+        self.config["pads"] = builder(center, **extra)
         self.reload_pads()
-        return {"pads": self.config["pads"]}
+        return {"pads": self.config["pads"], "style": style}
+
+    def cmd_nudge_pad(self, msg):
+        """Move one pad by a delta in world metres, e.g. {"pad": "don", "delta": [0, 0.02, 0]}."""
+        pad = self._pad_cfg(str(msg["pad"]))
+        delta = np.array(msg.get("delta", [0, 0, 0]), dtype=float)
+        pad["center"] = [round(float(v), 4) for v in np.array(pad["center"], dtype=float) + delta]
+        self.reload_pads()
+        return {"pad": pad}
+
+    def cmd_nudge_pads(self, msg):
+        """Move the whole drum by a delta, and optionally scale it about its centre."""
+        delta = np.array(msg.get("delta", [0, 0, 0]), dtype=float)
+        scale = float(msg.get("scale", 1.0))
+        pads = self.config["pads"]
+        centre = np.mean([np.array(p["center"], dtype=float) for p in pads], axis=0) if pads else np.zeros(3)
+        for pad in pads:
+            position = centre + (np.array(pad["center"], dtype=float) - centre) * scale + delta
+            pad["center"] = [round(float(v), 4) for v in position]
+            if scale != 1.0:
+                pad["radius"] = round(float(pad.get("radius", 0.11)) * scale, 4)
+        self.reload_pads()
+        return {"pads": pads}
+
+    def cmd_get_pads(self, msg):
+        return {"pads": self.config["pads"], "revision": self.pads_revision}
 
     def cmd_get_recent_hits(self, msg):
         return {"hits": self.recent_hits}
+
+    # -- background and IMU ---------------------------------------------
+    def cmd_learn_background(self, msg):
+        """Turn the spheres off, see what still looks like a sphere, mask it."""
+        self.set_leds(False)
+        frames = self.background.start(msg.get("frames"))
+        return {"frames": frames}
+
+    def cmd_clear_background(self, msg):
+        self.config["background"]["mask"] = []
+        self.background_result = {}
+        self.detector.invalidate()
+
+    def cmd_background_result(self, msg):
+        return {"result": self.background_result, "learning": self.background.active}
+
+    def cmd_recenter_orientation(self, msg):
+        """Point the controller's heading at the camera (the MOVE button does this too)."""
+        targets = [int(msg["controller"])] if "controller" in msg else list(self.controllers)
+        for cid in targets:
+            self._tracked_any(cid).orientation.recenter_yaw()
+        return {"controllers": targets}
+
+    def cmd_imu_calibrate_upright(self, msg):
+        """Hold the controller upright, sphere up, and call this.
+
+        Whatever the accelerometer reads now is the direction from the handle
+        towards the sphere, so the 3D model lines up with the real controller.
+        """
+        cid = int(msg.get("controller", 0))
+        tracked = self._tracked_any(cid)
+        move = self.moves.state_for(cid)
+        accel = np.array(move.accel_g if move is not None else tracked.orientation.last_accel_g, dtype=float)
+        norm = float(np.linalg.norm(accel))
+        if norm < 0.5:
+            raise RuntimeError("no accelerometer reading from controller %d" % cid)
+        axis = (accel / norm).round(4).tolist()
+        self.config["imu"]["handle_axis"] = axis
+        for other in self.controllers.values():
+            other.orientation.handle_axis = np.array(axis, dtype=float)
+            other.orientation.initialised = False
+        return {"handle_axis": axis}
 
     # -- osu -----------------------------------------------------------
     def cmd_set_osu(self, msg):
@@ -358,12 +587,32 @@ class Tracker:
         return {"osu": self.config["osu"]}
 
     # -- simulation ----------------------------------------------------
+    def cmd_sim_scene(self, msg):
+        """Switch the simulated room, e.g. {"scene": "living_room"}."""
+        from .simulation import SCENES
+
+        if "scene" in msg:
+            self.config["simulation"]["scene"] = str(msg["scene"])
+        for key in ("camera_position", "camera_target"):
+            if key in msg:
+                self.config["simulation"][key] = msg[key]
+        self.open_camera()
+        for tracked in self.controllers.values():
+            tracked.kalman.reset()
+        return {"scene": self.config["simulation"]["scene"],
+                "description": SCENES.get(self.config["simulation"]["scene"], {}).get("description", ""),
+                "camera": self._sim().camera_pose_world()}
+
+    def cmd_sim_truth(self, msg):
+        """True controller positions, for measuring the tracker's error."""
+        return {"truth": self._sim().truth_positions(), "camera": self._sim().camera_pose_world()}
+
     def cmd_sim_goto(self, msg):
         self._sim().goto(int(msg.get("controller", 0)), msg["position"])
 
     def cmd_sim_hit(self, msg):
         sim = self._sim()
-        at = float(msg.get("at", time.time() + 0.3))
+        at = float(msg.get("at", sim.clock() + 0.3))
         sim.schedule_hit(at, str(msg["pad"]), int(msg.get("controller", 0)))
 
     def cmd_sim_play_chart(self, msg):
@@ -378,6 +627,12 @@ class Tracker:
             if int(c["id"]) == cid:
                 return c
         raise KeyError(f"no controller with id {cid}")
+
+    def _tracked_any(self, cid: int) -> TrackedController:
+        tracked = self.controllers.get(cid)
+        if tracked is None:
+            raise KeyError(f"no controller with id {cid}")
+        return tracked
 
     def _tracked(self, cid: int) -> TrackedController:
         tracked = self.controllers.get(cid)
@@ -438,6 +693,7 @@ class Tracker:
             self.commands.reply(addr, self.handle_command(msg))
         self.moves.update()
         ok, frame, timestamp = self.camera.read()
+        self.update_controllers_imu(timestamp)
         if not ok or frame is None:
             time.sleep(0.01)
             return
@@ -463,6 +719,9 @@ class Tracker:
         if self.camera is not None:
             self.camera.close()
         self.moves.close()
+        # Release the UDP ports, so another tracker can start straight away.
+        for link in (self.state_out, self.commands, self.preview):
+            link.close()
 
 
 def main(argv=None) -> int:

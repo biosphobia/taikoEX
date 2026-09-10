@@ -6,6 +6,8 @@ A Taiko drum game for PC, played in the air with **PS Move controllers** tracked
 * **Game** - Godot 4.5, plays `.tja` charts, judges hits, keeps score.
 * **Tracker** - a small Python program that reads the camera, finds the glowing
   spheres, works out where they are in 3D and detects strokes through virtual drum pads.
+* **3D view** - the drum, your controllers and the camera itself drawn from where you
+  stand, so you can place the drum by looking at it instead of typing numbers.
 * **osu! mode** - the same virtual drums can type keys for osu!taiko (or anything else).
 * **Auto update** - every push to `main` builds a Windows release on GitHub; installed
   copies download and install it on start-up.
@@ -24,7 +26,10 @@ the tracker code itself) is a plain file you can open in a text editor.  See
 3. Install a driver that exposes the PS3 Eye as a webcam (see *Hardware* below).
 4. Run `TaikoEX.exe`.  The game starts the tracker (`tracker\taiko_tracker.exe`) for you.
 5. Open **Camera & drum calibration** and follow [docs/CALIBRATION.md](docs/CALIBRATION.md).
-6. **Play**.
+   In short: darken the exposure, press **Learn background**, sample each sphere's
+   colour, measure two distances, capture the three world points.
+6. Open the **3D view** and put the drum where you want it.
+7. **Play**.
 
 Without a camera you can play on the keyboard: `D` `F` `J` `K` = left rim, left face,
 right face, right rim.
@@ -73,18 +78,28 @@ colour alone.
 
 1. **Colour tracking.**  Each controller gets its own LED colour (magenta and cyan by
    default) and HSV range.  A blown-out white centre is expected and merged back into the
-   blob.  Crop and mask polygons remove lamps, TVs and posters.
+   blob, and the radius is measured from the blob's area corrected for motion blur, so a
+   fast stroke does not read as closer than it is.  Pressing **Learn background** turns
+   the spheres off for a moment and masks away whatever in the room still looks like one:
+   a lamp, a screen, a poster, sunlight on a wall.
 2. **3D position.**  The sphere is 45 mm across, so its size in pixels gives its distance
-   and the pixel position gives the direction.  A three point *world calibration* turns
-   camera coordinates into "your right / up / back", whatever the camera angle.
-3. **Virtual pads.**  Four flat discs (left rim, left face, right face, right rim) float in
-   that space.  Moving a sphere down through a disc fast enough is a hit; the crossing time
-   is interpolated between frames so timing is accurate to a few milliseconds.
-4. **Game / osu!.**  Hits are sent to the game with their camera timestamp, or typed as
+   and its position in the frame gives the direction.  Two distance measurements separate
+   the focal length from the constant glow around a lit sphere.  A three point *world
+   calibration* then turns camera coordinates into "your right / up / back", whatever the
+   camera angle.  Because a camera measures direction far better than distance, positions
+   go through a filter whose noise is an ellipsoid stretched along the line of sight.
+3. **Virtual pads.**  A drum floats in that space: a face for *don*, a rim around it for
+   *ka*, and the hand that strikes decides left from right.  A hit is the bottom of the
+   stroke - the moment your hand stops - which the controller's own accelerometer feels
+   even when the camera cannot see it.
+4. **Game / osu!.**  Hits are sent to the game with their own timestamp, or typed as
    keyboard keys when osu! mode is on.
 
-Details: [docs/CALIBRATION.md](docs/CALIBRATION.md), [docs/PROTOCOL.md](docs/PROTOCOL.md),
-[docs/OSU_MODE.md](docs/OSU_MODE.md), [docs/BUILDING.md](docs/BUILDING.md).
+The whole thing is explained properly in **[docs/TRACKING.md](docs/TRACKING.md)**,
+including why *don* and *ka* are told apart the way they are and what accuracy to
+expect.  Also: [docs/CALIBRATION.md](docs/CALIBRATION.md),
+[docs/PROTOCOL.md](docs/PROTOCOL.md), [docs/OSU_MODE.md](docs/OSU_MODE.md),
+[docs/BUILDING.md](docs/BUILDING.md).
 
 ## Repository layout
 
@@ -108,11 +123,20 @@ footage/              demo videos
 ## Tests
 
 ```
-cd tracker && python -m pytest          # vision, geometry, pads, network, end-to-end
+cd tracker && python -m pytest          # vision, geometry, imu, filter, pads, end-to-end
 godot --headless --path game res://tests/smoke.tscn
 godot --path game res://tests/demo_driver.tscn -- ++sim ++song_seconds=30
+
+python tools/evaluate_tracking.py      # score the tracker against known truth
+python tools/record_setups.py --godot <godot>   # record the 3D view in every test room
 ```
 
-The end-to-end tests run the complete tracker against the simulated camera: they
+The end-to-end tests run the complete tracker against a simulated camera: they
 calibrate the world through the camera, hit pads with simulated strokes and check the
-hit times.
+hit times.  `evaluate_tracking.py` goes further and scores position error, detection
+rate and timing spread in five simulated rooms with lamps, screens, sunlight, sensor
+noise and an arm that sweeps across the spheres - see
+[docs/TRACKING.md](docs/TRACKING.md#what-to-expect) for the numbers.
+
+No hardware at hand?  Every one of those runs on the `simulated` camera backend, and so
+does the game: `python tracker/run_tracker.py --backend simulated --no-hid`.

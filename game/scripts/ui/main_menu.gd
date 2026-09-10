@@ -23,6 +23,7 @@ func _ready() -> void:
 	UiKit.spacer(box, 20)
 	box.add_child(UiKit.button("Play", func(): UiKit.go_to("res://scenes/song_select.tscn"), 300))
 	box.add_child(UiKit.button("Camera & drum calibration", func(): UiKit.go_to("res://scenes/calibration.tscn"), 300))
+	box.add_child(UiKit.button("3D view (place the drum)", func(): UiKit.go_to("res://scenes/pov_view.tscn"), 300))
 	box.add_child(UiKit.button("osu! input mode", func(): UiKit.go_to("res://scenes/osu_mode.tscn"), 300))
 	box.add_child(UiKit.button("Settings", func(): UiKit.go_to("res://scenes/settings_menu.tscn"), 300))
 	box.add_child(UiKit.button("Quit", func(): get_tree().quit(), 300))

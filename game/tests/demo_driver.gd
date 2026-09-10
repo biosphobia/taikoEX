@@ -19,6 +19,7 @@ var phase_time := 0.0
 var _step := 0
 var _sim_timer := 0.0
 var _sim_pad := 0
+var _pad_ids: Array[String] = []
 var _hits_seen := 0
 
 
@@ -131,10 +132,14 @@ func _hit_pads(delta: float) -> void:
 	_sim_timer += delta
 	if _sim_timer > 0.45:
 		_sim_timer = 0.0
-		var pads := ["left_ka", "left_don", "right_don", "right_ka"]
-		var pad: String = pads[_sim_pad % pads.size()]
-		var controller := 0 if pad.begins_with("left") else 1
-		TrackerClient.send_command({"cmd": "sim_hit", "pad": pad, "controller": controller, "at": Time.get_unix_time_from_system() + 0.25})
+		if _pad_ids.is_empty():
+			TrackerClient.send_command({"cmd": "get_pads"}, func(reply):
+				for pad in reply.get("pads", []):
+					_pad_ids.append(str(pad.get("id", ""))))
+			return
+		var pad: String = _pad_ids[_sim_pad % _pad_ids.size()]
+		TrackerClient.send_command({"cmd": "sim_hit", "pad": pad, "controller": _sim_pad % 2,
+				"at": Time.get_unix_time_from_system() + 0.25})
 		_sim_pad += 1
 
 

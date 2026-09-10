@@ -21,15 +21,22 @@ import cv2
 import numpy as np
 
 
+# Beyond this axis ratio the blob is a streak, not a sphere with a tail, and
+# the capsule model stops being a fair description.
+MAX_ELONGATION = 6.0
+
+
 @dataclass
 class Detection:
     controller_id: int
     found: bool
     x: float = 0.0          # pixel x in the full (uncropped) frame
     y: float = 0.0
-    radius: float = 0.0     # pixel radius of the fitted circle
+    radius: float = 0.0     # inscribed pixel radius of the blob
     area: float = 0.0       # blob area in pixels
     circularity: float = 0.0
+    elongation: float = 1.0     # 1 = round, higher = smeared by motion blur
+    completeness: float = 1.0   # 1 = whole sphere visible, lower = partly hidden
 
 
 def hsv_mask(hsv: np.ndarray, hsv_min, hsv_max) -> np.ndarray:
@@ -120,25 +127,79 @@ def clean_mask(mask: np.ndarray, processing: dict) -> np.ndarray:
     return mask
 
 
-def fit_sphere_outline(contour, area: float) -> tuple[float, float, float, float]:
-    """Return (x, y, radius, enclosing_radius) for a blob.
+def fit_sphere_outline(contour, area: float) -> tuple[float, float, float, float, float, float]:
+    """Measure a sphere blob.
 
-    The radius comes from the minor axis of a fitted ellipse: motion blur
-    stretches the blob along the direction of movement, but its width stays
-    the true sphere diameter.  Small blobs fall back to the enclosing circle.
+    Returns ``(x, y, radius, enclosing_radius, elongation, completeness)``.
+
+    The radius comes from the blob's **area**, corrected for how far the
+    exposure smeared it.  A sphere sitting still is a disc of area pi*r^2; one
+    moving during the exposure is a capsule, which for an axis ratio ``e`` has
+    area ``(pi + 4(e - 1)) * r^2``.  Inverting that gives the radius the sphere
+    would have had if it had held still.
+
+    Area is the right thing to measure because it is a count of thousands of
+    pixels: the error contributed by the blob's edge averages out to a small
+    fraction of a pixel.  The alternatives are much worse - the enclosing
+    circle grows with speed, and the largest circle that fits inside the blob
+    is quantised to the pixel grid, which at a radius of ten pixels is a five
+    per cent jump in distance.
+
+    The centre is the blob's centroid, which for a smear is the position at
+    the middle of the exposure - half a frame behind the shutter, and that
+    constant lag is what ``hits.latency_compensation_ms`` exists for.
+
+    ``completeness`` says how much of the sphere survived.  For an intact
+    capsule the enclosing circle is exactly ``radius * elongation``; a blob
+    that is bitten into by a hand or the drum edge loses area without losing
+    its outline, so the ratio drops below one.  The tracker keeps such a
+    measurement but trusts its distance less (see
+    ``tracking_filter.measurement_covariance``).
     """
     (ex, ey), enclosing_radius = cv2.minEnclosingCircle(contour)
+    # The smallest rotated rectangle around the blob gives the true extent of
+    # the smear (a fitted ellipse matches second moments instead, which reads
+    # a capsule as much rounder than it is).
+    (rx, ry), (side_a, side_b), _ = cv2.minAreaRect(contour)
+    long_side, short_side = max(side_a, side_b), min(side_a, side_b)
+    elongation = 1.0
+    if short_side > 1e-6:
+        elongation = float(long_side / short_side)
     if len(contour) >= 5:
-        (cx, cy), (axis_a, axis_b), _ = cv2.fitEllipse(contour)
-        radius = min(axis_a, axis_b) / 2.0
-        if 0 < radius <= enclosing_radius * 1.05:
-            return float(cx), float(cy), float(radius), float(enclosing_radius)
-    return float(ex), float(ey), float(enclosing_radius), float(enclosing_radius)
+        # The rectangle can read a barely smeared blob as square; the fitted
+        # ellipse notices small smears earlier.  Whichever sees more, wins.
+        (_, _), (axis_a, axis_b), _ = cv2.fitEllipse(contour)
+        if min(axis_a, axis_b) > 1e-6:
+            elongation = max(elongation, float(max(axis_a, axis_b) / min(axis_a, axis_b)))
+    elongation = max(1.0, min(elongation, MAX_ELONGATION))
+    moments = cv2.moments(contour)
+    if moments["m00"] > 1e-6:
+        cx, cy = float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"])
+    else:
+        cx, cy = float(rx), float(ry)
+    radius = math.sqrt(max(area, 1.0) / capsule_area_factor(elongation))
+    completeness = 1.0
+    if enclosing_radius > 0.5:
+        completeness = min(1.0, radius * elongation / enclosing_radius)
+    return cx, cy, radius, float(enclosing_radius), elongation, completeness
+
+
+def capsule_area_factor(elongation: float) -> float:
+    """Area of a smeared disc divided by its radius squared.
+
+    A disc of radius r dragged a distance L covers ``pi*r^2 + 2*r*L``.  Its
+    fitted ellipse has minor axis ``2r`` and major axis ``L + 2r``, so the axis
+    ratio is ``e = (L + 2r) / 2r`` and ``L = 2r(e - 1)``, giving the factor
+    below.  At ``e = 1`` it is pi, the plain disc.
+    """
+    return math.pi + 4.0 * (max(1.0, elongation) - 1.0)
 
 
 def best_circle(mask: np.ndarray, processing: dict,
-                expected: tuple[float, float, float] | None = None) -> tuple[float, float, float, float, float] | None:
-    """Pick the blob that looks most like a sphere.  Returns (x, y, r, area, circularity).
+                expected: tuple[float, float, float] | None = None) -> tuple | None:
+    """Pick the blob that looks most like a sphere.
+
+    Returns ``(x, y, radius, area, circularity, elongation, completeness)``.
 
     ``expected`` is the (x, y, r) of the previous detection; blobs close to it
     get a large bonus so a bigger distractor elsewhere cannot steal the track.
@@ -149,15 +210,13 @@ def best_circle(mask: np.ndarray, processing: dict,
     min_circ = float(processing.get("min_circularity", 0.45))
     min_fill = float(processing.get("min_fill_ratio", 0.35))
     track_reach = float(processing.get("track_reach_px", 80))
-    radius_offset = float(processing.get("radius_offset_px", 0.0))
     best = None
     best_score = 0.0
     for contour in contours:
         area = cv2.contourArea(contour)
         if area < math.pi * min_r * min_r:
             continue
-        cx, cy, radius, enclosing_radius = fit_sphere_outline(contour, area)
-        radius += radius_offset
+        cx, cy, radius, enclosing_radius, elongation, completeness = fit_sphere_outline(contour, area)
         if radius < min_r or radius > max_r:
             continue
         perimeter = cv2.arcLength(contour, True)
@@ -174,7 +233,8 @@ def best_circle(mask: np.ndarray, processing: dict,
                 score *= 4.0
         if score > best_score:
             best_score = score
-            best = (float(cx), float(cy), float(radius), float(area), float(circularity))
+            best = (float(cx), float(cy), float(radius), float(area), float(circularity),
+                    float(elongation), float(completeness))
     return best
 
 
@@ -189,10 +249,27 @@ class SphereDetector:
         self.last_seen: dict[int, tuple[float, float, float]] = {}   # controller id -> (x, y, r)
 
     def region_mask_for(self, shape: tuple[int, int]) -> np.ndarray | None:
+        """Pixels the tracker is allowed to search: the crop, minus the drawn
+        mask polygons, minus anything the background learner found."""
         if self._region_shape != shape:
-            self._region_mask = build_region_mask(shape, self.config["processing"])
+            region = build_region_mask(shape, self.config["processing"])
+            learned = self._learned_mask(shape)
+            if learned is not None:
+                if region is None:
+                    region = np.full(shape, 255, dtype=np.uint8)
+                region = cv2.bitwise_and(region, cv2.bitwise_not(learned))
+            self._region_mask = region
             self._region_shape = shape
         return self._region_mask
+
+    def _learned_mask(self, shape: tuple[int, int]) -> np.ndarray | None:
+        from .background import decode_mask   # imported here to keep the module import order simple
+
+        try:
+            encoded = self.config["background"].get("mask")
+        except (KeyError, TypeError):
+            return None
+        return decode_mask(encoded, shape)
 
     def invalidate(self) -> None:
         """Call after the crop / mask settings changed."""
@@ -224,9 +301,9 @@ class SphereDetector:
                 self.last_seen.pop(cid, None)
                 detections.append(Detection(cid, False))
             else:
-                x, y, r, area, circ = circle
+                x, y, r, area, circ, elongation, completeness = circle
                 self.last_seen[cid] = (x, y, r)
-                detections.append(Detection(cid, True, x, y, r, area, circ))
+                detections.append(Detection(cid, True, x, y, r, area, circ, elongation, completeness))
         return detections
 
 

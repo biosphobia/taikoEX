@@ -130,6 +130,7 @@ class MoveManager:
         self.config = config
         self.available = hid is not None
         self.controllers: dict[int, MoveController] = {}   # slot id -> controller
+        self.leds_forced_off = False
         self._last_scan = 0.0
 
     def enabled(self) -> bool:
@@ -162,7 +163,7 @@ class MoveManager:
         if now - self._last_scan > interval:
             self._last_scan = now
             self._connect_missing()
-        brightness = float(self.config.get("hid.led_brightness", 1.0))
+        brightness = 0.0 if self.leds_forced_off else float(self.config.get("hid.led_brightness", 1.0))
         for slot_cfg in self.config["controllers"]:
             controller = self.controllers.get(int(slot_cfg["id"]))
             if controller is None:
@@ -196,6 +197,17 @@ class MoveManager:
             devices.remove(pick)
             self.controllers[slot] = controller
             print(f"[hid] slot {slot} -> controller {pick['serial'] or pick['path']}")
+
+    def set_all_leds(self, on: bool) -> None:
+        """Force every sphere on or off.  Used while learning the background."""
+        self.leds_forced_off = not on
+        brightness = float(self.config.get("hid.led_brightness", 1.0)) if on else 0.0
+        for slot_cfg in self.config["controllers"]:
+            controller = self.controllers.get(int(slot_cfg["id"]))
+            if controller is None:
+                continue
+            r, g, b = (int(round(c * brightness)) for c in slot_cfg["led"])
+            controller.set_led(r, g, b, force=True)
 
     def state_for(self, slot: int) -> MoveState | None:
         controller = self.controllers.get(slot)

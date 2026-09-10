@@ -57,7 +57,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "blur": 3,                # gaussian blur kernel (odd number, 0 = off)
         "open_iterations": 1,     # morphology: remove speckles smaller than ~3 px
         "close_iterations": 2,    # morphology: bridge small gaps in the blob
-        "radius_offset_px": 0.0,  # added to every measured radius (fine tune distance)
         "fill_holes": True,       # fill the blown-out white centre of a bright sphere
         "bright_core": True,      # also grab saturated white pixels touching the colour blob
         "bright_core_min_value": 235,
@@ -98,6 +97,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cy": -1,
         "sphere_radius_m": 0.0225,         # PS Move sphere is 45 mm across
         "k1": 0.0,                         # radial distortion (optional)
+        # A glowing sphere measures about a pixel bigger than it is (blended
+        # edge pixels).  The two-point distance calibration measures this.
+        "radius_offset_px": 0.0,
     },
     "world": {
         # Camera space -> world space.  world = rotation * cam + translation.
@@ -109,25 +111,57 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "pads": [
         # Virtual drum pads.  Positions are metres in world space.
-        # kind: "don" (drum face) or "ka" (rim).  side: "left" / "right".
-        # A pad is a flat disc (inner_radius 0) or a ring (inner_radius > 0).
-        {"id": "left_ka",   "name": "Left rim",   "kind": "ka",  "side": "left",
-         "center": [-0.30, 0.0, 0.0], "normal": [0, 1, 0], "radius": 0.11, "inner_radius": 0.0},
-        {"id": "left_don",  "name": "Left face",  "kind": "don", "side": "left",
-         "center": [-0.10, 0.0, 0.0], "normal": [0, 1, 0], "radius": 0.11, "inner_radius": 0.0},
-        {"id": "right_don", "name": "Right face", "kind": "don", "side": "right",
-         "center": [0.10, 0.0, 0.0],  "normal": [0, 1, 0], "radius": 0.11, "inner_radius": 0.0},
-        {"id": "right_ka",  "name": "Right rim",  "kind": "ka",  "side": "right",
-         "center": [0.30, 0.0, 0.0],  "normal": [0, 1, 0], "radius": 0.11, "inner_radius": 0.0},
+        # kind: "don" (face) or "ka" (rim).  side: "left", "right" or "any"
+        # ("any" means the hand that hit it decides, which is how a real drum
+        # works).  A pad is a flat disc, or a ring when inner_radius > 0.
+        {"id": "don", "name": "Drum face", "kind": "don", "side": "any",
+         "center": [0.0, 0.0, 0.0], "normal": [0, 1, 0], "radius": 0.22, "inner_radius": 0.0},
+        {"id": "ka", "name": "Drum rim", "kind": "ka", "side": "any",
+         "center": [0.0, 0.0, 0.0], "normal": [0, 1, 0], "radius": 0.45, "inner_radius": 0.22},
     ],
+    "fusion": {
+        # Smoothing that knows a camera measures direction well and distance
+        # badly (see taiko_tracker/tracking_filter.py).
+        "enabled": True,
+        "pixel_noise_px": 0.35,           # how much the blob centre jitters
+        "radius_noise_px": 0.45,          # how much the blob radius jitters
+        "process_accel_mps2": 40.0,       # how hard a hand can accelerate (about 4 g)
+        "process_accel_with_imu_mps2": 12.0,   # lower, because the IMU supplies the acceleration
+        "use_imu_accel": True,            # feed controller acceleration into the prediction
+        "reset_after_s": 0.3,             # start fresh if tracking was lost this long
+        "max_speed_mps": 6.0,             # fastest a hand can plausibly move
+        "unmeasured_depth_m": 5.0,        # depth uncertainty when the size cannot be trusted
+        "untrusted_frames_max": 20,       # stop doubting the size after this many frames
+        "completeness_full": 0.8,         # a blob at least this whole is trusted for distance
+        "occluded_noise_max": 8.0,        # how much a hidden sphere's distance noise may grow
+        "outlier_sigma": 6.0,             # a measurement this far outside the prediction is suspect
+        "outlier_frames": 3,              # after this many suspect frames in a row, restart there
+    },
     "hits": {
-        "min_speed_mps": 0.5,         # how fast the sphere must move through the pad
+        # "stroke": a hit is the bottom of the stroke, where the hand turns
+        #           around.  Robust, because it does not depend on the camera's
+        #           distance estimate.  This is the default.
+        # "plane":  a hit is the sphere crossing the pad's surface.  Sharper,
+        #           but needs an accurate distance, so use it with a close
+        #           camera pointing straight at you.
+        "mode": "stroke",
+        "height_window_m": 0.25,      # how far above/below a pad still counts as "over" it
+        "min_speed_mps": 0.5,         # how fast the sphere must move towards the pad
+        "min_descent_m": 0.06,        # and how far it must come down to count as a stroke
         "rearm_height_m": 0.04,       # rise this far above the pad before it can hit again
         "cooldown_s": 0.05,           # per-controller minimum time between hits
-        "latency_compensation_ms": 25.0,   # camera + processing delay, subtracted from hit times
+        "latency_compensation_ms": 25.0,      # camera + processing delay, subtracted from camera-timed hits
+        "latency_compensation_imu_ms": 15.0,  # the same for accelerometer-timed hits, which barely lag
         "max_frame_gap_s": 0.25,      # if tracking is lost longer than this, forget velocity
-        "use_accelerometer": False,   # confirm/time hits with the controller IMU (needs HID)
-        "accel_threshold_g": 2.5,
+        # When the controller's accelerometer is available, take the *timing*
+        # of a hit from it: it feels the stroke stop even when the camera is
+        # looking straight down the line the hand travels.  The camera still
+        # decides which pad was hit.
+        "use_accelerometer": True,
+        "accel_threshold_g": 2.0,     # deceleration that counts as a strike
+        "hard_hit_g": 6.0,            # deceleration that counts as a full-strength strike
+        "swing_window_s": 0.18,       # how far back to look for the swing towards the pad
+        "swing_threshold_g": 1.0,     # how hard the hand must have driven at the pad first
     },
     "network": {
         "game_host": "127.0.0.1",
@@ -150,6 +184,37 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,              # light the spheres and read the IMU over Bluetooth HID
         "led_brightness": 1.0,        # 0..1, lower if the camera blows out the colour
         "reconnect_interval_s": 3.0,
+    },
+    "imu": {
+        # Orientation from the controller's accelerometer + gyroscope.
+        "enabled": True,
+        "accel_gain": 1.0,            # how hard gravity pulls the estimate straight (0 = gyro only)
+        "auto_bias": True,            # learn the gyro's zero offset while the controller rests
+        "bias_samples": 120,
+        "still_gyro_rad_s": 0.15,
+        "handle_axis": [0, 1, 0],     # sensor-frame direction from the handle towards the sphere
+        "gyro_rad_per_unit": 0.001065,  # raw gyro counts -> rad/s (about 61 counts per deg/s)
+        "recenter_with_move_button": True,   # pressing MOVE re-points the heading at the camera
+    },
+    "background": {
+        # Automatic mask learning: the tracker turns the spheres off for a
+        # moment, looks at what still matches each controller's colour and
+        # masks those areas away (lamps, TVs, posters, sunlit walls).
+        "learn_frames": 30,           # frames to average with the LEDs off
+        "dilate_px": 6,               # grow each masked area by this much
+        "min_area_px": 12,            # ignore specks smaller than this
+        "auto_relearn_s": 0.0,        # >0: relearn automatically every N seconds
+        "mask": [],                   # run-length encoded learned mask (written by the tracker)
+    },
+    "simulation": {
+        # Only used by the "simulated" camera backend.
+        "scene": "clean",             # clean, living_room, far_shelf, floor_low, sunny
+        "camera_position": [],        # override the scene's camera pose if you want
+        "camera_target": [],
+        "imu_noise": 0.01,
+        # Step time by one frame per read instead of following the wall clock.
+        # Used by the tests, so that a busy machine cannot change the result.
+        "virtual_clock": False,
     },
     "debug": {
         "show_window": False,         # OpenCV window with the processed image
