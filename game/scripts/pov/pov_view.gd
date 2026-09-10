@@ -42,6 +42,7 @@ var _preview: TextureRect
 var _preview_label: Label
 var _preview_texture := ImageTexture.new()
 var _has_preview := false
+var _retry_timer := 0.0
 
 @onready var camera: Camera3D = $Camera3D
 
@@ -61,6 +62,7 @@ func _ready() -> void:
 	TrackerClient.state_updated.connect(_on_state)
 	TrackerClient.hit_received.connect(_on_hit)
 	TrackerClient.send_command({"cmd": "get_pads"}, _on_pads)
+	status.text = "Waiting for the tracker...\nStart it, or check the ports under Settings."
 	_apply_view()
 
 
@@ -201,6 +203,19 @@ func _on_preview(image: Image) -> void:
 		_preview_texture.set_image(image)
 		_preview.texture = _preview_texture
 	_has_preview = true
+
+
+func _process(delta: float) -> void:
+	# Keep asking for the pads until a tracker answers.  Without them there is
+	# nothing to draw, and an empty screen looks like a broken one.
+	if not drum.pads.is_empty():
+		return
+	_retry_timer += delta
+	if _retry_timer > 2.0:
+		_retry_timer = 0.0
+		TrackerClient.send_command({"cmd": "get_pads"}, _on_pads)
+		status.text = ("Waiting for the tracker.\n"
+				+ "Start it, or check the ports under Settings.")
 
 
 # ---------------------------------------------------------------- tracker
