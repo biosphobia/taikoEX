@@ -27,9 +27,9 @@ a **rim** ring around it out to about 90 cm for ka.  When a stroke is detected,
 the tracker measures how far the sphere is from the middle of the drum, in the
 plane of the drum:
 
-* inside the face radius → **don**
-* between the inner and outer rim radius → **ka**
-* outside everything → no hit at all
+* within 22 cm of the middle → **don**
+* between 22 cm and 45 cm → **ka**
+* further out than that → no hit at all
 
 Left and right come from a different question: *which hand*.  Each controller
 is bound to a colour, so the tracker always knows whether a hit came from your
@@ -43,12 +43,15 @@ requirements and the design gives each one the measurement it can rely on:
 | question | answered by | how accurate that is |
 | --- | --- | --- |
 | left or right hand? | which colour moved | exact |
-| don or ka? | distance from the drum centre, sideways | a few millimetres to a few centimetres |
+| don or ka? | distance from the drum centre, sideways | good to a few centimetres against a 22 cm boundary |
 | when? | the accelerometer's deceleration peak | a few milliseconds |
 | how hard? | the size of that peak | fine for a loud/soft distinction |
 
-The don/ka boundary is a 1 cm gap between two big targets, so it survives
-several centimetres of error.  Compare that with the alternative four-pad
+The don/ka boundary is a single circle 44 cm across, with a big target on each
+side of it, so it survives several centimetres of error.  (There is deliberately
+no gap between face and rim: a gap would be a dead ring where a stroke counted
+as neither, and with a few centimetres of measurement error it would swallow
+real hits.)  Compare that with the alternative four-pad
 layout (`style: "four_pads"`), which puts left rim, left face, right face and
 right rim in a row: it needs the hand placed correctly along one line to within
 a few centimetres, which is more than a camera two metres away can promise.

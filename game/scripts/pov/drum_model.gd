@@ -112,7 +112,10 @@ func _pad_material(pad: Dictionary, flash: float) -> StandardMaterial3D:
 	# The face takes the pale colour of drum skin, the rim the darker wood of
 	# the body, each tinted towards the note colour it stands for.
 	var base := GameSkin.color("drum_face" if is_face else "drum_rim")
-	base = base.lerp(GameSkin.color("don" if is_face else "ka"), 0.22 if is_face else 0.30)
+	# Only a hint of the note colour on the rim: cyan over wood turns it grey,
+	# and the rim should still read as the side of a drum.  The flash when it is
+	# struck carries the rest.
+	base = base.lerp(GameSkin.color("don" if is_face else "ka"), 0.22 if is_face else 0.12)
 	var lit := base.lerp(GameSkin.color("don" if is_face else "ka"), flash * 0.45)
 	# Unshaded, so the skin's colours come out exactly as chosen instead of
 	# being tinted by whatever the room lighting and the sphere glows do.
