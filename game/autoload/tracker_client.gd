@@ -188,6 +188,10 @@ func _maybe_launch_tracker() -> void:
 		return
 	var args := command.slice(1)
 	_launches += 1
+	if command[0].ends_with(".exe"):
+		# A tracker left over from an earlier run, possibly stuck, would keep
+		# the camera and the command port.  Nobody else runs this exe.
+		OS.execute("taskkill", PackedStringArray(["/F", "/IM", command[0].get_file()]), [], false)
 	tracker_pid = OS.create_process(command[0], args, false)
 	if tracker_pid > 0:
 		print("Started tracker (pid %d): %s" % [tracker_pid, " ".join(command)])

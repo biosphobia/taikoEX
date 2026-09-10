@@ -60,11 +60,15 @@ func tracker_command() -> PackedStringArray:
 	return PackedStringArray()
 
 
+## The build tag written by the release workflow into version.txt.  "dev" in
+## the editor; "unknown" in an exported build that somehow lacks the file,
+## which the updater treats as older than every release.
 func version() -> String:
 	var file := FileAccess.open("res://version.txt", FileAccess.READ)
 	if file == null:
-		return "dev"
-	return file.get_as_text().strip_edges()
+		return "dev" if OS.has_feature("editor") else "unknown"
+	var text := file.get_as_text().strip_edges()
+	return text if not text.is_empty() else "unknown"
 
 
 func read_json(path: String, fallback: Variant = null) -> Variant:
