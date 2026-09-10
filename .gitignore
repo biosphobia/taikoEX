@@ -9,3 +9,4 @@ game/data/settings.json
 *.avi
 *.mp4
 !footage/*.mp4
+tracker/tracker.log
