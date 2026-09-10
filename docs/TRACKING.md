@@ -202,7 +202,7 @@ Three things are worth drawing out.
 
 Timing holds up even where the position does not.  On the floor the camera is
 staring straight along the direction the hands move, so its idea of where they
-are is thirty centimetres out - and the strokes are still timed to within four
+are is thirty centimetres out - and the strokes are still timed to within seven
 milliseconds, because that number comes from the accelerometer.
 
 Don and ka are told apart reliably wherever the camera is close enough to see
